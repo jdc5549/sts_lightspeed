@@ -1,29 +1,37 @@
 """
 Minimal setup.py for sts_lightspeed to work as an editable pip package.
 
-The actual build is handled by CMake. This just makes the built .so file
-importable when installed with: pip install -e .
+The actual build is handled by CMake. For editable installs, this creates
+a .pth file that adds the build directory to sys.path.
 """
-from setuptools import setup, find_packages
-from setuptools.dist import Distribution
+from setuptools import setup
+from setuptools.command.develop import develop
 import os
+import sys
 
 
-class BinaryDistribution(Distribution):
-    """Distribution which always forces a binary package with platform name"""
-    def has_ext_modules(foo):
-        return True
+class DevelopCommand(develop):
+    """Custom develop command that creates a .pth file"""
+    def run(self):
+        # Check if the module has been built
+        build_dir = os.path.join(os.path.dirname(__file__), 'build')
+        if not os.path.exists(build_dir):
+            print("\n" + "="*70)
+            print("WARNING: build/ directory not found!")
+            print("Please build sts_lightspeed before installing:")
+            print("  cmake -S . -B build -DPYTHON_EXECUTABLE=$(which python)")
+            print("  cmake --build build --target slaythespire -j4")
+            print("="*70 + "\n")
 
+        # Run the standard develop command
+        develop.run(self)
 
-# Check if the module has been built
-build_dir = os.path.join(os.path.dirname(__file__), 'build')
-if not os.path.exists(build_dir):
-    print("\n" + "="*70)
-    print("WARNING: build/ directory not found!")
-    print("Please build sts_lightspeed before installing:")
-    print("  cmake -S . -B build -DPYTHON_EXECUTABLE=$(which python)")
-    print("  cmake --build build --target slaythespire -j4")
-    print("="*70 + "\n")
+        # Create a .pth file to add build/ to the path
+        install_dir = self.install_dir
+        pth_file = os.path.join(install_dir, 'sts_lightspeed.pth')
+        with open(pth_file, 'w') as f:
+            f.write(os.path.abspath(build_dir) + '\n')
+        print(f"Created {pth_file} pointing to {build_dir}")
 
 
 setup(
@@ -33,12 +41,10 @@ setup(
     author='gamerpuppy',
     url='https://github.com/gamerpuppy/sts_lightspeed',
 
-    # Tell pip to include the build directory in the package
-    packages=[''],
-    package_dir={'': 'build'},
-    package_data={'': ['*.so']},
+    # No packages - this is just a C extension
+    packages=[],
 
-    distclass=BinaryDistribution,
+    cmdclass={'develop': DevelopCommand},
     python_requires='>=3.8',
     zip_safe=False,
 )

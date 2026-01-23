@@ -110,10 +110,14 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("data", &RelicInstance::data);
 
     pybind11::class_<Map> map(m, "SpireMap");
-    map.def(pybind11::init<std::uint64_t, int,int,bool>());
+    map.def(pybind11::init<std::uint64_t, int, int, bool>(),
+            pybind11::arg("seed"), pybind11::arg("ascension"), pybind11::arg("act"), pybind11::arg("assign_burning_elite"));
     map.def("get_room_type", &sts::py::getRoomType);
     map.def("has_edge", &sts::py::hasEdge);
     map.def("get_nn_rep", &sts::py::getNNMapRepresentation);
+    map.def_readonly("burning_elite_x", &Map::burningEliteX);
+    map.def_readonly("burning_elite_y", &Map::burningEliteY);
+    map.def_readonly("burning_elite_buff", &Map::burningEliteBuff);
     map.def("__repr__", [](const Map &m) {
         return m.toString(true);
     });
