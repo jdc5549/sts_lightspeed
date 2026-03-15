@@ -15,6 +15,7 @@
 #include "sim/SimHelpers.h"
 #include "sim/PrintHelpers.h"
 #include "game/Game.h"
+#include "game/Neow.h"
 
 #include "slaythespire.h"
 
@@ -75,6 +76,182 @@ PYBIND11_MODULE(slaythespire, m) {
             return oss.str();
         }, "returns a string representation of the GameContext");
 
+    // Action methods
+    gameContext.def("choose_event_option",
+            [](GameContext &gc, int idx) { gc.chooseEventOption(idx); },
+            "choose an event option by index")
+        .def("choose_boss_relic",
+            [](GameContext &gc, int idx) { gc.chooseBossRelic(idx); },
+            "choose a boss relic by index")
+        .def("choose_campfire_option",
+            [](GameContext &gc, int idx) { gc.chooseCampfireOption(idx); },
+            "choose a campfire option by index")
+        .def("choose_card_select_option",
+            [](GameContext &gc, int idx) { gc.chooseSelectCardScreenOption(idx); },
+            "choose a card from the card select screen by index")
+        .def("choose_treasure_room",
+            [](GameContext &gc, bool openChest) { gc.chooseTreasureRoomOption(openChest); },
+            "choose whether to open the treasure room chest")
+        .def("transition_to_map_node",
+            [](GameContext &gc, int x) { gc.transitionToMapNode(x); },
+            "transition to the map node at column x")
+        .def("choose_neow_option",
+            [](GameContext &gc, int idx) { gc.chooseNeowOption(gc.info.neowRewards[idx]); },
+            "choose a Neow blessing by index (0-3)")
+        .def("shop_buy_card",
+            [](GameContext &gc, int idx) { gc.info.shop.buyCard(gc, idx); },
+            "buy the card at shop index (0-6)")
+        .def("shop_buy_relic",
+            [](GameContext &gc, int idx) { gc.info.shop.buyRelic(gc, idx); },
+            "buy the relic at shop index (0-2)")
+        .def("shop_buy_potion",
+            [](GameContext &gc, int idx) { gc.info.shop.buyPotion(gc, idx); },
+            "buy the potion at shop index (0-2)")
+        .def("shop_purge",
+            [](GameContext &gc) { gc.info.shop.buyCardRemove(gc); },
+            "pay to purge a card (triggers CARD_SELECT screen)")
+        .def("obtain_gold",
+            [](GameContext &gc, int amount) { gc.obtainGold(amount); },
+            "add gold (for taking gold rewards)")
+        .def("obtain_potion",
+            [](GameContext &gc, Potion p) { gc.obtainPotion(p); },
+            "add a potion to inventory")
+        .def("take_reward_gold",
+            [](GameContext &gc, int idx) {
+                auto &r = gc.info.rewardsContainer;
+                if (idx >= 0 && idx < r.goldRewardCount) {
+                    gc.obtainGold(r.gold[idx]);
+                    r.removeGoldReward(idx);
+                }
+            },
+            "take gold reward at index, add to player gold and remove from rewards container")
+        .def("take_reward_relic",
+            [](GameContext &gc, int idx) {
+                auto &r = gc.info.rewardsContainer;
+                if (idx >= 0 && idx < r.relicCount) {
+                    gc.obtainRelic(r.relics[idx]);
+                    if (r.sapphireKey && idx == r.relicCount - 1) {
+                        r.sapphireKey = false;
+                    }
+                    r.removeRelicReward(idx);
+                }
+            },
+            "take relic reward at index and remove from rewards container")
+        .def("skip_reward_relic",
+            [](GameContext &gc, int idx) {
+                auto &r = gc.info.rewardsContainer;
+                if (idx >= 0 && idx < r.relicCount) {
+                    r.removeRelicReward(idx);
+                }
+            },
+            "remove relic reward at index without taking it")
+        .def("take_reward_key",
+            [](GameContext &gc) {
+                auto &r = gc.info.rewardsContainer;
+                if (r.relicCount > 0) {
+                    r.removeRelicReward(r.relicCount - 1);
+                }
+                gc.obtainKey(Key::SAPPHIRE_KEY);
+                r.sapphireKey = false;
+            },
+            "take sapphire key from reward instead of last relic")
+        .def("take_reward_potion",
+            [](GameContext &gc, int idx) {
+                auto &r = gc.info.rewardsContainer;
+                if (idx >= 0 && idx < r.potionCount) {
+                    gc.obtainPotion(r.potions[idx]);
+                    r.removePotionReward(idx);
+                }
+            },
+            "take potion reward at index and remove from rewards container")
+        .def("regain_control",
+            [](GameContext &gc) { gc.regainControl(); },
+            "advance game state past current screen (e.g. close empty rewards)");
+
+    // State query methods
+    gameContext
+        .def_property_readonly("cur_event_id",
+            [](const GameContext &gc) { return static_cast<int>(gc.curEvent); },
+            "current event as integer index into the Event enum")
+        .def("get_boss_relics",
+            [](const GameContext &gc) {
+                return std::vector<RelicId>{
+                    gc.info.bossRelics[0], gc.info.bossRelics[1], gc.info.bossRelics[2]
+                };
+            },
+            "return the three boss relic choices")
+        .def("get_rewards_info",
+            [](const GameContext &gc) -> pybind11::dict {
+                const auto &r = gc.info.rewardsContainer;
+                pybind11::dict d;
+                d["gold_count"]        = r.goldRewardCount;
+                d["gold"]              = std::vector<int>(r.gold.begin(), r.gold.begin() + r.goldRewardCount);
+                d["relic_count"]       = r.relicCount;
+                d["relics"]            = std::vector<RelicId>(r.relics.begin(), r.relics.begin() + r.relicCount);
+                d["potion_count"]      = r.potionCount;
+                d["potions"]           = std::vector<Potion>(r.potions.begin(), r.potions.begin() + r.potionCount);
+                d["card_reward_count"] = r.cardRewardCount;
+                d["emerald_key"]       = r.emeraldKey;
+                d["sapphire_key"]      = r.sapphireKey;
+                return d;
+            },
+            "return the current rewards container as a dict")
+        .def("get_shop_info",
+            [](const GameContext &gc) -> pybind11::dict {
+                const auto &s = gc.info.shop;
+                pybind11::dict d;
+                // cards[0-6], relics[0-2], potions[0-2]
+                // prices layout: [0-6]=cards, [7-9]=relics, [10-12]=potions
+                std::vector<Card> cards(s.cards, s.cards + 7);
+                std::vector<RelicId> relics(s.relics, s.relics + 3);
+                std::vector<Potion> potions(s.potions, s.potions + 3);
+                std::vector<int> card_prices, relic_prices, potion_prices;
+                for (int i = 0; i < 7; ++i) card_prices.push_back(s.prices[i]);
+                for (int i = 7; i < 10; ++i) relic_prices.push_back(s.prices[i]);
+                for (int i = 10; i < 13; ++i) potion_prices.push_back(s.prices[i]);
+                d["cards"]         = cards;
+                d["card_prices"]   = card_prices;
+                d["relics"]        = relics;
+                d["relic_prices"]  = relic_prices;
+                d["potions"]       = potions;
+                d["potion_prices"] = potion_prices;
+                d["remove_cost"]   = s.removeCost;
+                return d;
+            },
+            "return current shop inventory as a dict")
+        .def("get_card_select_info",
+            [](const GameContext &gc) -> pybind11::dict {
+                pybind11::dict d;
+                d["screen_type"]     = static_cast<int>(gc.info.selectScreenType);
+                d["to_select_count"] = gc.info.toSelectCount;
+                pybind11::list cards;
+                for (int i = 0; i < (int)gc.info.toSelectCards.size(); ++i) {
+                    const auto &sc = gc.info.toSelectCards[i];
+                    cards.append(pybind11::make_tuple(sc.card, sc.deckIdx));
+                }
+                d["cards"] = cards;
+                return d;
+            },
+            "return card select screen info as a dict")
+        .def("get_neow_rewards",
+            [](const GameContext &gc) -> pybind11::list {
+                pybind11::list rewards;
+                for (int i = 0; i < 4; ++i) {
+                    const auto &nr = gc.info.neowRewards[i];
+                    pybind11::dict d;
+                    d["bonus"] = static_cast<int>(nr.r);
+                    d["cost"]  = static_cast<int>(nr.d);
+                    rewards.append(d);
+                }
+                return rewards;
+            },
+            "return the four Neow blessing options as a list of dicts with 'bonus' and 'cost' ints")
+        .def("get_potions",
+            [](const GameContext &gc) -> std::vector<Potion> {
+                return std::vector<Potion>(gc.potions.begin(), gc.potions.begin() + gc.potionCount);
+            },
+            "return current potion inventory (occupied slots only)");
+
     gameContext.def_readwrite("outcome", &GameContext::outcome)
         .def_readwrite("act", &GameContext::act)
         .def_readwrite("floor_num", &GameContext::floorNum)
@@ -84,7 +261,6 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("cur_map_node_x", &GameContext::curMapNodeX)
         .def_readwrite("cur_map_node_y", &GameContext::curMapNodeY)
         .def_readwrite("cur_room", &GameContext::curRoom)
-//        .def_readwrite("cur_event", &GameContext::curEvent) // todo standardize event names
         .def_readwrite("boss", &GameContext::boss)
 
         .def_readwrite("cur_hp", &GameContext::curHp)
@@ -831,6 +1007,95 @@ PYBIND11_MODULE(slaythespire, m) {
         .value("CIRCLET", RelicId::CIRCLET)
         .value("RED_CIRCLET", RelicId::RED_CIRCLET)
         .value("INVALID", RelicId::INVALID);
+
+    pybind11::enum_<Potion>(m, "Potion")
+        .value("INVALID", Potion::INVALID)
+        .value("EMPTY_POTION_SLOT", Potion::EMPTY_POTION_SLOT)
+        .value("AMBROSIA", Potion::AMBROSIA)
+        .value("ANCIENT_POTION", Potion::ANCIENT_POTION)
+        .value("ATTACK_POTION", Potion::ATTACK_POTION)
+        .value("BLESSING_OF_THE_FORGE", Potion::BLESSING_OF_THE_FORGE)
+        .value("BLOCK_POTION", Potion::BLOCK_POTION)
+        .value("BLOOD_POTION", Potion::BLOOD_POTION)
+        .value("BOTTLED_MIRACLE", Potion::BOTTLED_MIRACLE)
+        .value("COLORLESS_POTION", Potion::COLORLESS_POTION)
+        .value("CULTIST_POTION", Potion::CULTIST_POTION)
+        .value("CUNNING_POTION", Potion::CUNNING_POTION)
+        .value("DEXTERITY_POTION", Potion::DEXTERITY_POTION)
+        .value("DISTILLED_CHAOS", Potion::DISTILLED_CHAOS)
+        .value("DUPLICATION_POTION", Potion::DUPLICATION_POTION)
+        .value("ELIXIR_POTION", Potion::ELIXIR_POTION)
+        .value("ENERGY_POTION", Potion::ENERGY_POTION)
+        .value("ENTROPIC_BREW", Potion::ENTROPIC_BREW)
+        .value("ESSENCE_OF_DARKNESS", Potion::ESSENCE_OF_DARKNESS)
+        .value("ESSENCE_OF_STEEL", Potion::ESSENCE_OF_STEEL)
+        .value("EXPLOSIVE_POTION", Potion::EXPLOSIVE_POTION)
+        .value("FAIRY_POTION", Potion::FAIRY_POTION)
+        .value("FEAR_POTION", Potion::FEAR_POTION)
+        .value("FIRE_POTION", Potion::FIRE_POTION)
+        .value("FLEX_POTION", Potion::FLEX_POTION)
+        .value("FOCUS_POTION", Potion::FOCUS_POTION)
+        .value("FRUIT_JUICE", Potion::FRUIT_JUICE)
+        .value("GAMBLERS_BREW", Potion::GAMBLERS_BREW)
+        .value("GHOST_IN_A_JAR", Potion::GHOST_IN_A_JAR)
+        .value("HEART_OF_IRON", Potion::HEART_OF_IRON)
+        .value("LIQUID_BRONZE", Potion::LIQUID_BRONZE)
+        .value("LIQUID_MEMORIES", Potion::LIQUID_MEMORIES)
+        .value("POISON_POTION", Potion::POISON_POTION)
+        .value("POTION_OF_CAPACITY", Potion::POTION_OF_CAPACITY)
+        .value("POWER_POTION", Potion::POWER_POTION)
+        .value("REGEN_POTION", Potion::REGEN_POTION)
+        .value("SKILL_POTION", Potion::SKILL_POTION)
+        .value("SMOKE_BOMB", Potion::SMOKE_BOMB)
+        .value("SNECKO_OIL", Potion::SNECKO_OIL)
+        .value("SPEED_POTION", Potion::SPEED_POTION)
+        .value("STANCE_POTION", Potion::STANCE_POTION)
+        .value("STRENGTH_POTION", Potion::STRENGTH_POTION)
+        .value("SWIFT_POTION", Potion::SWIFT_POTION)
+        .value("WEAK_POTION", Potion::WEAK_POTION);
+
+    pybind11::enum_<CardSelectScreenType>(m, "CardSelectScreenType")
+        .value("INVALID", CardSelectScreenType::INVALID)
+        .value("TRANSFORM", CardSelectScreenType::TRANSFORM)
+        .value("TRANSFORM_UPGRADE", CardSelectScreenType::TRANSFORM_UPGRADE)
+        .value("UPGRADE", CardSelectScreenType::UPGRADE)
+        .value("REMOVE", CardSelectScreenType::REMOVE)
+        .value("DUPLICATE", CardSelectScreenType::DUPLICATE)
+        .value("OBTAIN", CardSelectScreenType::OBTAIN)
+        .value("BOTTLE", CardSelectScreenType::BOTTLE)
+        .value("BONFIRE_SPIRITS", CardSelectScreenType::BONFIRE_SPIRITS);
+
+    // Neow enums exposed as flat names on the module
+    pybind11::enum_<Neow::Bonus>(m, "NeowBonus")
+        .value("THREE_CARDS", Neow::Bonus::THREE_CARDS)
+        .value("ONE_RANDOM_RARE_CARD", Neow::Bonus::ONE_RANDOM_RARE_CARD)
+        .value("REMOVE_CARD", Neow::Bonus::REMOVE_CARD)
+        .value("UPGRADE_CARD", Neow::Bonus::UPGRADE_CARD)
+        .value("TRANSFORM_CARD", Neow::Bonus::TRANSFORM_CARD)
+        .value("RANDOM_COLORLESS", Neow::Bonus::RANDOM_COLORLESS)
+        .value("THREE_SMALL_POTIONS", Neow::Bonus::THREE_SMALL_POTIONS)
+        .value("RANDOM_COMMON_RELIC", Neow::Bonus::RANDOM_COMMON_RELIC)
+        .value("TEN_PERCENT_HP_BONUS", Neow::Bonus::TEN_PERCENT_HP_BONUS)
+        .value("THREE_ENEMY_KILL", Neow::Bonus::THREE_ENEMY_KILL)
+        .value("HUNDRED_GOLD", Neow::Bonus::HUNDRED_GOLD)
+        .value("RANDOM_COLORLESS_2", Neow::Bonus::RANDOM_COLORLESS_2)
+        .value("REMOVE_TWO", Neow::Bonus::REMOVE_TWO)
+        .value("ONE_RARE_RELIC", Neow::Bonus::ONE_RARE_RELIC)
+        .value("THREE_RARE_CARDS", Neow::Bonus::THREE_RARE_CARDS)
+        .value("TWO_FIFTY_GOLD", Neow::Bonus::TWO_FIFTY_GOLD)
+        .value("TRANSFORM_TWO_CARDS", Neow::Bonus::TRANSFORM_TWO_CARDS)
+        .value("TWENTY_PERCENT_HP_BONUS", Neow::Bonus::TWENTY_PERCENT_HP_BONUS)
+        .value("BOSS_RELIC", Neow::Bonus::BOSS_RELIC)
+        .value("INVALID", Neow::Bonus::INVALID);
+
+    pybind11::enum_<Neow::Drawback>(m, "NeowCost")
+        .value("INVALID", Neow::Drawback::INVALID)
+        .value("NONE", Neow::Drawback::NONE)
+        .value("TEN_PERCENT_HP_LOSS", Neow::Drawback::TEN_PERCENT_HP_LOSS)
+        .value("NO_GOLD", Neow::Drawback::NO_GOLD)
+        .value("CURSE", Neow::Drawback::CURSE)
+        .value("PERCENT_DAMAGE", Neow::Drawback::PERCENT_DAMAGE)
+        .value("LOSE_STARTER_RELIC", Neow::Drawback::LOSE_STARTER_RELIC);
 
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
