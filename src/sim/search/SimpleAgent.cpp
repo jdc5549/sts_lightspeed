@@ -290,7 +290,11 @@ bool search::SimpleAgent::playPotion(BattleContext &bc) {
     for (; i < bc.potionCapacity; ++i) {
         auto p = bc.potions[i];
 
-        bool canDrink = !(p == sts::Potion::FAIRY_POTION || p == sts::Potion::EMPTY_POTION_SLOT);
+        // Skip undrinkable slots and any out-of-range values (e.g. from memory
+        // corruption or uninitialized data — values beyond WEAK_POTION=43).
+        uint8_t pv = static_cast<uint8_t>(p);
+        bool canDrink = (pv >= 2 && pv <= static_cast<uint8_t>(sts::Potion::WEAK_POTION)
+                         && p != sts::Potion::FAIRY_POTION);
 
         if (canDrink) {
             int target = 0;
@@ -312,7 +316,8 @@ bool search::SimpleAgent::playPotion(BattleContext &bc) {
 
 void search::SimpleAgent::playoutBattle(BattleContext &bc) {
     bool usedPotions = !isBossEncounter(bc.encounter);
-    while (bc.outcome == Outcome::UNDECIDED) {
+    int maxIter = 100000;
+    while (bc.outcome == Outcome::UNDECIDED && --maxIter > 0) {
         if (bc.inputState == InputState::CARD_SELECT) {
             stepBattleCardSelect(bc);
 
@@ -324,7 +329,11 @@ void search::SimpleAgent::playoutBattle(BattleContext &bc) {
                 usedPotions = playPotion(bc);
             }
         } else {
-            assert(false);
+            // Unknown input state — resume action execution to let the game resolve it automatically.
+            // States like SHUFFLE_DISCARD_TO_DRAW, FILL_RANDOM_POTIONS, etc. are resolved by
+            // the action queue; resetting to EXECUTING_ACTIONS lets executeActions() continue.
+            bc.inputState = InputState::EXECUTING_ACTIONS;
+            bc.executeActions();
         }
     }
 }
@@ -484,8 +493,23 @@ void search::SimpleAgent::stepBattleCardSelect(BattleContext &bc) {
             break;
 
         case CardSelectTask::HEADBUTT:
+        case CardSelectTask::HOLOGRAM:
         case CardSelectTask::LIQUID_MEMORIES_POTION:
+        case CardSelectTask::MEDITATE:
             setupCardOptionsHelper(actions, bc.cards.discardPile.begin(), bc.cards.discardPile.end());
+            break;
+
+        case CardSelectTask::NIGHTMARE:
+        case CardSelectTask::SETUP:
+            setupCardOptionsHelper(actions, bc.cards.hand.begin(), bc.cards.hand.begin() + bc.cards.cardsInHand);
+            break;
+
+        case CardSelectTask::RECYCLE:
+            setupCardOptionsHelper(actions, bc.cards.hand.begin(), bc.cards.hand.begin() + bc.cards.cardsInHand);
+            break;
+
+        case CardSelectTask::SEEK:
+            setupCardOptionsHelper(actions, bc.cards.drawPile.begin(), bc.cards.drawPile.end());
             break;
 
         case CardSelectTask::SECRET_TECHNIQUE:
@@ -512,6 +536,12 @@ void search::SimpleAgent::stepBattleCardSelect(BattleContext &bc) {
             assert(false);
 #endif
             break;
+    }
+
+    // Safety guard: if no valid cards found, skip the selection (select 0 cards) to avoid UB on actions.front()/.back()
+    if (actions.empty()) {
+        takeAction(bc, search::Action(search::ActionType::MULTI_CARD_SELECT, 0));
+        return;
     }
 
     std::sort(actions.begin(), actions.end(), [](std::pair<search::Action,CardInstance> a, std::pair<search::Action,CardInstance> b) {

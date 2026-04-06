@@ -319,8 +319,14 @@ void Monster::die(BattleContext &bc) {
         bc.addToBot( Actions::DrawCards(1) );
     }
 
-    if (bc.player.hasRelic<RelicId::THE_SPECIMEN>()) {
-        bc.addToBot( Actions::SetState(InputState::SELECT_ENEMY_THE_SPECIMEN_APPLY_POISON) );
+    if (bc.player.hasRelic<RelicId::THE_SPECIMEN>() && hasStatus<MS::POISON>()) {
+        int poisonAmount = getStatus<MS::POISON>();
+        if (!bc.monsters.areMonstersBasicallyDead()) {
+            int targetIdx = bc.monsters.getRandomMonsterIdx(bc.cardRandomRng, true);
+            if (targetIdx >= 0) {
+                bc.addToBot( Actions::DebuffEnemy<MS::POISON>(targetIdx, poisonAmount) );
+            }
+        }
     }
 }
 

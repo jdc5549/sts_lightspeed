@@ -1358,11 +1358,19 @@ bool GameContext::obtainRelic(RelicId r) {
             break;
         }
 
+        case RelicId::DOLLYS_MIRROR: {
+            if (deck.size() > 0) {
+                openCardSelectScreen(CardSelectScreenType::DUPLICATE, 1);
+                opensScreen = true;
+            }
+            break;
+        }
+
         case RelicId::EMPTY_CAGE: {
             openCardSelectScreen(CardSelectScreenType::REMOVE, 2);
             opensScreen = true;
             break;
-        }                                    
+        }
 
         case RelicId::LEES_WAFFLE: {
             playerIncreaseMaxHp(7);
@@ -1447,6 +1455,11 @@ bool GameContext::obtainRelic(RelicId r) {
             reward.addCardReward(createCardReward(curRoom));
             openCombatRewardScreen(reward);
             opensScreen = true;
+            break;
+        }
+
+        case RelicId::OLD_COIN: {
+            obtainGold(300);
             break;
         }
 
@@ -2673,16 +2686,19 @@ void GameContext::chooseEventOption(int idx) {
 
                 case 3:
                     loseGold(unfavorable ? 75 : 60);
-                    deck.transformRandomCards(miscRng, 2); // TODO
+                    deck.transformRandomCards(miscRng, 2);
                     regainControl();
+                    break;
 
                 case 4:
                     loseGold(unfavorable ? 110 : 90);
                     regainControlAction = [=](GameContext &gc) {
                         gc.deck.upgradeRandomCards(miscRng, 1);
+                        gc.playerLoseHp(unfavorable ? 5 : 3);
                         returnToMapAction(gc);
                     };
                     openCardSelectScreen(CardSelectScreenType::REMOVE, 1);
+                    break;
 
                 case 5:
                     playerLoseHp(unfavorable ? 5 : 3);
@@ -3732,7 +3748,9 @@ void GameContext::chooseCampfireOption(int idx) {
 
         case 4: { // TOKE
             openCardSelectScreen(CardSelectScreenType::REMOVE, 1);
-            regainControl();
+            // Note: no regainControl() here — stays in CARD_SELECT until the card
+            // is chosen via chooseSelectCardScreenOption(), which calls regainControl()
+            // after deck.removeSelected(). Matches the SMITH (case 1) pattern.
             break;
         }
 

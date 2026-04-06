@@ -12,12 +12,15 @@
 
 #include "sim/ConsoleSimulator.h"
 #include "sim/search/ScumSearchAgent2.h"
+#include "sim/search/SimpleAgent.h"
+#include "sim/RandomAgent.h"
 #include "sim/SimHelpers.h"
 #include "sim/PrintHelpers.h"
 #include "game/Game.h"
 #include "game/Neow.h"
 
 #include "slaythespire.h"
+#include "combat/BattleContext.h"
 
 
 using namespace sts;
@@ -41,6 +44,43 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("pause_on_card_reward", &search::ScumSearchAgent2::pauseOnCardReward, "causes the agent to pause so as to cede control to the user when it encounters a card reward choice")
         .def_readwrite("print_logs", &search::ScumSearchAgent2::printLogs, "when set to true, the agent prints state information as it makes actions")
         .def("playout", &search::ScumSearchAgent2::playout);
+
+    // Standalone battle helpers — run only the current BATTLE screen using an
+    // alternative micro agent, then return.  The GameContext is left in the
+    // post-battle state (REWARDS or next screen) exactly as agent.playout()
+    // would leave it.  These are used by LightspeedRunner when micro_agent_type
+    // is 'simple' or 'random'.
+
+    m.def("play_battle_simple",
+        [](GameContext &gc) {
+            search::SimpleAgent agent;
+            agent.curGameContext = &gc;  // required: playoutBattle reads curGameContext->act
+            BattleContext bc;
+            bc.init(gc);
+            agent.playoutBattle(bc);
+            // If maxIter exhausted without resolution, force PLAYER_LOSS so exitBattle
+            // sets gc.outcome and prevents the Python runner from looping indefinitely.
+            if (bc.outcome == Outcome::UNDECIDED) {
+                bc.outcome = Outcome::PLAYER_LOSS;
+            }
+            bc.exitBattle(gc);
+        },
+        "Run the current BATTLE using SimpleAgent's deterministic heuristic battle logic."
+    );
+
+    m.def("play_battle_random",
+        [](GameContext &gc, std::uint32_t seed) {
+            std::default_random_engine rng(seed);
+            RandomAgent agent(rng);
+            BattleContext bc;
+            bc.init(gc);
+            agent.playoutBattle(bc);
+            bc.exitBattle(gc);
+        },
+        pybind11::arg("gc"),
+        pybind11::arg("seed") = 42u,
+        "Run the current BATTLE using uniformly random action selection."
+    );
 
     pybind11::class_<GameContext> gameContext(m, "GameContext");
     gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())
@@ -279,7 +319,18 @@ PYBIND11_MODULE(slaythespire, m) {
 
         .def_readwrite("shop_remove_count", &GameContext::shopRemoveCount)
         .def_readwrite("speedrun_pace", &GameContext::speedrunPace)
-        .def_readwrite("note_for_yourself_card", &GameContext::noteForYourselfCard);
+        .def_readwrite("note_for_yourself_card", &GameContext::noteForYourselfCard)
+        .def("get_bottled_card_indices",
+            [](const GameContext &gc) -> std::vector<int> {
+                std::vector<int> result;
+                for (int i = 0; i < gc.deck.size(); ++i) {
+                    if (gc.deck.isCardBottled(i)) {
+                        result.push_back(i);
+                    }
+                }
+                return result;
+            },
+            "return list of deck indices that are bottled (excluded from REMOVE/TOKE selection)");
 
     pybind11::class_<RelicInstance> relic(m, "Relic");
     relic.def_readwrite("id", &RelicInstance::id)

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 
 using namespace sts;
 
@@ -28,10 +29,10 @@ void RelicContainer::remove(RelicId r) {
 
 void RelicContainer::replaceRelic(RelicId o, RelicId r) {
     setHasRelic(o, false);
-    setHasRelic(r, true);
     for (auto & relic : relics) {
-        if (relic.id == r) {
+        if (relic.id == o) {
             relic.id = r;
+            setHasRelic(r, true);
             break;
         }
     }
