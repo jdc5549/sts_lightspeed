@@ -45,11 +45,15 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("print_logs", &search::ScumSearchAgent2::printLogs, "when set to true, the agent prints state information as it makes actions")
         .def("playout", &search::ScumSearchAgent2::playout);
 
-    // Standalone battle helpers — run only the current BATTLE screen using an
-    // alternative micro agent, then return.  The GameContext is left in the
-    // post-battle state (REWARDS or next screen) exactly as agent.playout()
-    // would leave it.  These are used by LightspeedRunner when micro_agent_type
-    // is 'simple' or 'random'.
+    // Standalone helpers for running battles or full games with alternative agents.
+    //
+    // play_battle_simple / play_battle_random: run ONLY the current BATTLE screen
+    //   using an alternative micro agent, then return. The GameContext is left in
+    //   the post-battle state (REWARDS or next screen). Used by LightspeedRunner
+    //   when micro_agent_type is 'simple' or 'random'.
+    //
+    // play_simple_full: run an entire game (combat + overworld) using SimpleAgent's
+    //   heuristics. Used as a baseline in agent comparison experiments.
 
     m.def("play_battle_simple",
         [](GameContext &gc) {
@@ -80,6 +84,15 @@ PYBIND11_MODULE(slaythespire, m) {
         pybind11::arg("gc"),
         pybind11::arg("seed") = 42u,
         "Run the current BATTLE using uniformly random action selection."
+    );
+
+    m.def("play_simple_full",
+        [](GameContext &gc) {
+            search::SimpleAgent agent;
+            agent.playout(gc);
+        },
+        pybind11::arg("gc"),
+        "Run a complete game using SimpleAgent's heuristic logic for both combat and overworld."
     );
 
     pybind11::class_<GameContext> gameContext(m, "GameContext");
