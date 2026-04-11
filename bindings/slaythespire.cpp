@@ -1161,6 +1161,505 @@ PYBIND11_MODULE(slaythespire, m) {
         .value("PERCENT_DAMAGE", Neow::Drawback::PERCENT_DAMAGE)
         .value("LOSE_STARTER_RELIC", Neow::Drawback::LOSE_STARTER_RELIC);
 
+    // -----------------------------------------------------------------------
+    // InputState enum
+    // -----------------------------------------------------------------------
+    pybind11::enum_<InputState>(m, "InputState")
+        .value("EXECUTING_ACTIONS", InputState::EXECUTING_ACTIONS)
+        .value("PLAYER_NORMAL", InputState::PLAYER_NORMAL)
+        .value("CARD_SELECT", InputState::CARD_SELECT)
+        .value("CHOOSE_STANCE_ACTION", InputState::CHOOSE_STANCE_ACTION)
+        .value("CHOOSE_TOOLBOX_COLORLESS_CARD", InputState::CHOOSE_TOOLBOX_COLORLESS_CARD)
+        .value("CHOOSE_EXHAUST_POTION_CARDS", InputState::CHOOSE_EXHAUST_POTION_CARDS)
+        .value("CHOOSE_GAMBLING_CARDS", InputState::CHOOSE_GAMBLING_CARDS)
+        .value("CHOOSE_ENTROPIC_BREW_DISCARD_POTIONS", InputState::CHOOSE_ENTROPIC_BREW_DISCARD_POTIONS)
+        .value("CHOOSE_DISCARD_CARDS", InputState::CHOOSE_DISCARD_CARDS)
+        .value("SCRY", InputState::SCRY)
+        .value("SELECT_ENEMY_ACTIONS", InputState::SELECT_ENEMY_ACTIONS)
+        .value("FILL_RANDOM_POTIONS", InputState::FILL_RANDOM_POTIONS)
+        .value("SHUFFLE_INTO_DRAW_BURN", InputState::SHUFFLE_INTO_DRAW_BURN)
+        .value("SHUFFLE_INTO_DRAW_VOID", InputState::SHUFFLE_INTO_DRAW_VOID)
+        .value("SHUFFLE_INTO_DRAW_DAZED", InputState::SHUFFLE_INTO_DRAW_DAZED)
+        .value("SHUFFLE_INTO_DRAW_WOUND", InputState::SHUFFLE_INTO_DRAW_WOUND)
+        .value("SHUFFLE_INTO_DRAW_SLIMED", InputState::SHUFFLE_INTO_DRAW_SLIMED)
+        .value("SHUFFLE_INTO_DRAW_ALL_STATUS", InputState::SHUFFLE_INTO_DRAW_ALL_STATUS)
+        .value("SHUFFLE_CUR_CARD_INTO_DRAW", InputState::SHUFFLE_CUR_CARD_INTO_DRAW)
+        .value("SHUFFLE_DISCARD_TO_DRAW", InputState::SHUFFLE_DISCARD_TO_DRAW)
+        .value("INITIAL_SHUFFLE", InputState::INITIAL_SHUFFLE)
+        .value("CREATE_RANDOM_CARD_IN_HAND_POWER", InputState::CREATE_RANDOM_CARD_IN_HAND_POWER)
+        .value("CREATE_RANDOM_CARD_IN_HAND_COLORLESS", InputState::CREATE_RANDOM_CARD_IN_HAND_COLORLESS)
+        .value("CREATE_RANDOM_CARD_IN_HAND_DEAD_BRANCH", InputState::CREATE_RANDOM_CARD_IN_HAND_DEAD_BRANCH)
+        .value("SELECT_CARD_IN_HAND_EXHAUST", InputState::SELECT_CARD_IN_HAND_EXHAUST)
+        .value("GENERATE_NILRY_CARDS", InputState::GENERATE_NILRY_CARDS)
+        .value("EXHAUST_RANDOM_CARD_IN_HAND", InputState::EXHAUST_RANDOM_CARD_IN_HAND)
+        .value("SELECT_STRANGE_SPOON_PROC", InputState::SELECT_STRANGE_SPOON_PROC)
+        .value("SELECT_ENEMY_THE_SPECIMEN_APPLY_POISON", InputState::SELECT_ENEMY_THE_SPECIMEN_APPLY_POISON)
+        .value("SELECT_WARPED_TONGS_CARD", InputState::SELECT_WARPED_TONGS_CARD)
+        .value("CREATE_ENCHIRIDION_POWER", InputState::CREATE_ENCHIRIDION_POWER)
+        .value("SELECT_CONFUSED_CARD_COST", InputState::SELECT_CONFUSED_CARD_COST);
+
+    // -----------------------------------------------------------------------
+    // CardSelectTask enum
+    // -----------------------------------------------------------------------
+    pybind11::enum_<CardSelectTask>(m, "CardSelectTask")
+        .value("INVALID", CardSelectTask::INVALID)
+        .value("ARMAMENTS", CardSelectTask::ARMAMENTS)
+        .value("CODEX", CardSelectTask::CODEX)
+        .value("DISCOVERY", CardSelectTask::DISCOVERY)
+        .value("DUAL_WIELD", CardSelectTask::DUAL_WIELD)
+        .value("EXHAUST_ONE", CardSelectTask::EXHAUST_ONE)
+        .value("EXHAUST_MANY", CardSelectTask::EXHAUST_MANY)
+        .value("EXHUME", CardSelectTask::EXHUME)
+        .value("FORETHOUGHT", CardSelectTask::FORETHOUGHT)
+        .value("GAMBLE", CardSelectTask::GAMBLE)
+        .value("HEADBUTT", CardSelectTask::HEADBUTT)
+        .value("HOLOGRAM", CardSelectTask::HOLOGRAM)
+        .value("LIQUID_MEMORIES_POTION", CardSelectTask::LIQUID_MEMORIES_POTION)
+        .value("MEDITATE", CardSelectTask::MEDITATE)
+        .value("NIGHTMARE", CardSelectTask::NIGHTMARE)
+        .value("RECYCLE", CardSelectTask::RECYCLE)
+        .value("SECRET_TECHNIQUE", CardSelectTask::SECRET_TECHNIQUE)
+        .value("SECRET_WEAPON", CardSelectTask::SECRET_WEAPON)
+        .value("SEEK", CardSelectTask::SEEK)
+        .value("SETUP", CardSelectTask::SETUP)
+        .value("WARCRY", CardSelectTask::WARCRY);
+
+    // -----------------------------------------------------------------------
+    // BattleContext — exposed for Python micro-agent step-by-step control.
+    //
+    // Usage pattern:
+    //   bc = sts.BattleContext()
+    //   bc.init(gc)
+    //   bc.execute_actions()            # advance past initial shuffle / innates
+    //   while not bc.is_over:
+    //       state_dict = bc.get_state() # read state
+    //       if bc.input_state == sts.InputState.PLAYER_NORMAL:
+    //           bc.play_card(hand_idx, target_idx)  # or bc.end_turn()
+    //       elif bc.input_state == sts.InputState.CARD_SELECT:
+    //           bc.choose_hand_card(hand_idx)        # or choose_discard_card etc.
+    //       bc.execute_actions()
+    //   bc.exit_battle(gc)
+    // -----------------------------------------------------------------------
+
+    // Helper lambda: convert a CardInstance to a Python dict
+    auto card_to_dict = [](const CardInstance &c) -> pybind11::dict {
+        pybind11::dict d;
+        d["card_id"]      = std::string(cardStringIds[static_cast<int>(c.id)]);
+        d["upgraded"]     = c.isUpgraded();
+        d["cost"]         = static_cast<int>(c.cost);
+        d["cost_for_turn"]= static_cast<int>(c.costForTurn);
+        d["special_data"] = static_cast<int>(c.specialData);
+        d["unique_id"]    = static_cast<int>(c.uniqueId);
+        return d;
+    };
+
+    // Helper lambda: convert a Monster to a Python dict
+    auto monster_to_dict = [](const Monster &m) -> pybind11::dict {
+        pybind11::dict d;
+        d["monster_id"]       = std::string(monsterIdStrings[static_cast<int>(m.id)]);
+        d["current_hp"]       = m.curHp;
+        d["max_hp"]           = m.maxHp;
+        d["block"]            = m.block;
+        d["move_id"]          = std::string(monsterMoveStrings[static_cast<int>(m.moveHistory[0])]);
+        d["move_history_0"]   = std::string(monsterMoveStrings[static_cast<int>(m.moveHistory[0])]);
+        d["move_history_1"]   = std::string(monsterMoveStrings[static_cast<int>(m.moveHistory[1])]);
+        // Note: current intended move is whatever was last set via setMove(); we expose move_history[0]
+        // as the "current" move since the game writes the current move there before executing it.
+        // Status effects
+        d["strength"]         = m.strength;
+        d["vulnerable"]       = m.vulnerable;
+        d["weak"]             = m.weak;
+        d["artifact"]         = static_cast<int>(m.artifact);
+        d["poison"]           = static_cast<int>(m.poison);
+        d["metallicize"]      = static_cast<int>(m.metallicize);
+        d["plated_armor"]     = static_cast<int>(m.platedArmor);
+        d["regen"]            = static_cast<int>(m.regen);
+        d["block_return"]     = static_cast<int>(m.blockReturn);
+        d["choked"]           = static_cast<int>(m.choked);
+        d["corpse_explosion"] = static_cast<int>(m.corpseExplosion);
+        d["lock_on"]          = static_cast<int>(m.lockOn);
+        d["mark"]             = static_cast<int>(m.mark);
+        d["shackled"]         = static_cast<int>(m.shackled);
+        d["unique_power0"]    = m.uniquePower0;
+        d["unique_power1"]    = static_cast<int>(m.uniquePower1);
+        // Boolean statuses (packed in statusBits)
+        d["asleep"]       = m.hasStatus<MS::ASLEEP>();
+        d["barricade"]    = m.hasStatus<MS::BARRICADE>();
+        d["minion"]       = m.hasStatus<MS::MINION>();
+        d["minion_leader"]= m.hasStatus<MS::MINION_LEADER>();
+        d["painful_stabs"]= m.hasStatus<MS::PAINFUL_STABS>();
+        d["regrow"]       = m.hasStatus<MS::REGROW>();
+        d["shifting"]     = m.hasStatus<MS::SHIFTING>();
+        d["stasis"]       = m.hasStatus<MS::STASIS>();
+        // Flags
+        d["is_alive"]     = m.isAlive();
+        d["half_dead"]    = m.halfDead;
+        d["is_escaping"]  = m.isEscaping();
+        return d;
+    };
+
+    pybind11::class_<BattleContext>(m, "BattleContext")
+        .def(pybind11::init<>())
+
+        // Initialise from a GameContext (starts the fight)
+        .def("init",
+            [](BattleContext &bc, GameContext &gc) { bc.init(gc); },
+            "Initialise BattleContext from a GameContext (sets up monsters, shuffles deck, etc.)")
+
+        // Advance until a player-decision point is reached (PLAYER_NORMAL or CARD_SELECT)
+        // or the battle ends (isBattleOver == true).
+        .def("execute_actions",
+            [](BattleContext &bc) { bc.executeActions(); },
+            "Run the action queue until a player decision is needed or the battle ends")
+
+        // Primary decision: play a card from hand
+        .def("play_card",
+            [](BattleContext &bc, int hand_idx, int target_idx) {
+                if (hand_idx < 0 || hand_idx >= bc.cards.cardsInHand) return;
+                const CardInstance &card = bc.cards.hand[hand_idx];
+                bc.addToBotCard(CardQueueItem(card, target_idx, bc.player.energy));
+                bc.inputState = InputState::EXECUTING_ACTIONS;
+                bc.executeActions();
+            },
+            pybind11::arg("hand_idx"),
+            pybind11::arg("target_idx") = 0,
+            "Play the card at hand_idx targeting monster at target_idx (default 0)")
+
+        // End the current player turn
+        .def("end_turn",
+            [](BattleContext &bc) {
+                bc.endTurn();
+                bc.inputState = InputState::EXECUTING_ACTIONS;
+                bc.executeActions();
+            },
+            "End the current player turn (also pumps the action queue)")
+
+        // Resume action queue processing: resets inputState to EXECUTING_ACTIONS
+        // and calls executeActions(). Use this after 'automatic' intermediate states
+        // (e.g. INITIAL_SHUFFLE, FILL_RANDOM_POTIONS) that are not PLAYER_NORMAL or
+        // CARD_SELECT and do not require Python input.
+        .def("resume_actions",
+            [](BattleContext &bc) {
+                bc.inputState = InputState::EXECUTING_ACTIONS;
+                bc.executeActions();
+            },
+            "Reset inputState to EXECUTING_ACTIONS and pump the action queue")
+
+        // Card-select screen choices (CARD_SELECT input state)
+        .def("choose_armaments_card",
+            [](BattleContext &bc, int hand_idx) { bc.chooseArmamentsCard(hand_idx); },
+            "Choose a card in hand to upgrade (Armaments)")
+        .def("choose_discovery_card",
+            [](BattleContext &bc, int card_id_int) {
+                bc.chooseDiscoveryCard(static_cast<CardId>(card_id_int));
+            },
+            "Choose one of three Discovery card options by CardId int")
+        .def("choose_dual_wield_card",
+            [](BattleContext &bc, int hand_idx) { bc.chooseDualWieldCard(hand_idx); },
+            "Choose a card in hand to duplicate (Dual Wield)")
+        .def("choose_exhaust_one_card",
+            [](BattleContext &bc, int hand_idx) { bc.chooseExhaustOneCard(hand_idx); },
+            "Exhaust a card in hand (Exhaust One select screen)")
+        .def("choose_exhume_card",
+            [](BattleContext &bc, int exhaust_idx) { bc.chooseExhumeCard(exhaust_idx); },
+            "Exhume a card from the exhaust pile")
+        .def("choose_forethought_card",
+            [](BattleContext &bc, int hand_idx) { bc.chooseForethoughtCard(hand_idx); },
+            "Choose a card in hand to place on bottom of draw pile (Forethought)")
+        .def("choose_headbutt_card",
+            [](BattleContext &bc, int discard_idx) { bc.chooseHeadbuttCard(discard_idx); },
+            "Choose a card in discard pile to put on top of draw pile (Headbutt)")
+        .def("choose_recycle_card",
+            [](BattleContext &bc, int hand_idx) { bc.chooseRecycleCard(hand_idx); },
+            "Choose a card in hand to recycle (gain energy equal to cost)")
+        .def("choose_warcry_card",
+            [](BattleContext &bc, int hand_idx) { bc.chooseWarcryCard(hand_idx); },
+            "Choose a card in hand to put on top of draw pile (Warcry)")
+        .def("choose_discard_to_hand_card",
+            [](BattleContext &bc, int discard_idx, bool for_zero_cost) {
+                bc.chooseDiscardToHandCard(discard_idx, for_zero_cost);
+            },
+            pybind11::arg("discard_idx"),
+            pybind11::arg("for_zero_cost") = false,
+            "Put a card from discard pile into hand")
+        .def("choose_exhaust_many_cards",
+            [](BattleContext &bc, std::vector<int> idxs) {
+                fixed_list<int, 10> fl;
+                for (int i : idxs) fl.push_back(i);
+                bc.chooseExhaustCards(fl);
+            },
+            "Exhaust multiple cards from hand (Exhaust Many select screen)")
+        .def("choose_gamble_cards",
+            [](BattleContext &bc, std::vector<int> idxs) {
+                fixed_list<int, 10> fl;
+                for (int i : idxs) fl.push_back(i);
+                bc.chooseGambleCards(fl);
+            },
+            "Keep the specified hand indices; discard the rest (Gamble)")
+
+        // Exit battle and propagate results back to GameContext
+        .def("exit_battle",
+            [](BattleContext &bc, GameContext &gc) { bc.exitBattle(gc); },
+            "Propagate combat results back to the GameContext after battle ends")
+
+        // State query properties
+        .def_property_readonly("input_state",
+            [](const BattleContext &bc) { return bc.inputState; },
+            "Current InputState (PLAYER_NORMAL, CARD_SELECT, etc.)")
+        .def_property_readonly("outcome",
+            [](const BattleContext &bc) { return bc.outcome; },
+            "Current Outcome (UNDECIDED, PLAYER_VICTORY, PLAYER_LOSS)")
+        .def_property_readonly("is_over",
+            [](const BattleContext &bc) { return bc.outcome != Outcome::UNDECIDED; },
+            "True if the battle has ended (victory or defeat)")
+        .def_property_readonly("turn",
+            [](const BattleContext &bc) { return bc.turn; },
+            "Current turn number")
+        .def_property_readonly("encounter",
+            [](const BattleContext &bc) { return bc.encounter; },
+            "MonsterEncounter for this fight")
+        .def_property_readonly("ascension",
+            [](const BattleContext &bc) { return bc.ascension; },
+            "Ascension level")
+
+        // get_card_select_info — analogous to GameContext.get_card_select_info()
+        .def("get_card_select_info",
+            [](const BattleContext &bc) -> pybind11::dict {
+                pybind11::dict d;
+                const auto &csi = bc.cardSelectInfo;
+                d["task"]             = static_cast<int>(csi.cardSelectTask);
+                d["pick_count"]       = csi.pickCount;
+                d["can_pick_zero"]    = csi.canPickZero;
+                d["can_pick_any"]     = csi.canPickAnyNumber;
+                // cards field: only meaningful for DISCOVERY and CODEX
+                pybind11::list cards;
+                for (int i = 0; i < 3; ++i) {
+                    cards.append(static_cast<int>(csi.cards[i]));
+                }
+                d["cards"] = cards;
+                return d;
+            },
+            "Return card-select screen info (task, pick_count, can_pick_zero, cards)")
+
+        // get_state — bulk extraction of complete battle state as a Python dict.
+        // Called by LightspeedCombatAdapter.extract().
+        .def("get_state",
+            [card_to_dict, monster_to_dict](const BattleContext &bc) -> pybind11::dict {
+                pybind11::dict d;
+                const Player &p = bc.player;
+
+                // --- Player core ---
+                d["current_hp"]          = p.curHp;
+                d["max_hp"]              = p.maxHp;
+                d["block"]               = p.block;
+                d["energy"]              = p.energy;
+                d["energy_per_turn"]     = static_cast<int>(p.energyPerTurn);
+                d["card_draw_per_turn"]  = static_cast<int>(p.cardDrawPerTurn);
+                d["gold"]                = static_cast<int>(p.gold);
+                d["character"]           = std::string(characterClassEnumNames[static_cast<int>(p.cc)]);
+                d["ascension"]           = bc.ascension;
+                d["floor_num"]           = bc.floorNum;
+                d["turn"]                = bc.turn;
+
+                // --- Player scalar statuses ---
+                d["strength"]   = p.strength;
+                d["dexterity"]  = p.dexterity;
+                d["focus"]      = p.focus;
+                d["artifact"]   = p.artifact;
+
+                // --- Player stance / orbs ---
+                d["stance"]    = std::string(stanceStrings[static_cast<int>(p.stance)]);
+                d["orb_slots"] = static_cast<int>(p.orbSlots);
+
+                // --- Player relic counters ---
+                d["happy_flower_counter"]   = static_cast<int>(p.happyFlowerCounter);
+                d["incense_burner_counter"] = static_cast<int>(p.incenseBurnerCounter);
+                d["ink_bottle_counter"]     = static_cast<int>(p.inkBottleCounter);
+                d["inserter_counter"]       = static_cast<int>(p.inserterCounter);
+                d["nunchaku_counter"]       = static_cast<int>(p.nunchakuCounter);
+                d["pen_nib_counter"]        = static_cast<int>(p.penNibCounter);
+                d["sundial_counter"]        = static_cast<int>(p.sundialCounter);
+
+                // --- Player internal counters ---
+                d["bomb1"]                           = static_cast<int>(p.bomb1);
+                d["bomb2"]                           = static_cast<int>(p.bomb2);
+                d["bomb3"]                           = static_cast<int>(p.bomb3);
+                d["combust_hp_loss"]                 = static_cast<int>(p.combustHpLoss);
+                d["deva_form_energy_per_turn"]        = static_cast<int>(p.devaFormEnergyPerTurn);
+                d["echo_form_cards_doubled"]          = static_cast<int>(p.echoFormCardsDoubled);
+                d["panache_counter"]                  = static_cast<int>(p.panacheCounter);
+                d["have_used_necronomicon_this_turn"] = p.haveUsedNecronomiconThisTurn;
+
+                // --- Turn tracking ---
+                d["cards_played_this_turn"]    = static_cast<int>(p.cardsPlayedThisTurn);
+                d["attacks_played_this_turn"]  = static_cast<int>(p.attacksPlayedThisTurn);
+                d["skills_played_this_turn"]   = static_cast<int>(p.skillsPlayedThisTurn);
+                d["cards_discarded_this_turn"] = static_cast<int>(p.cardsDiscardedThisTurn);
+                d["orange_pellets_attack"]     = (bool)p.orangePelletsCardTypesPlayed[0];
+                d["orange_pellets_skill"]      = (bool)p.orangePelletsCardTypesPlayed[1];
+                d["orange_pellets_power"]      = (bool)p.orangePelletsCardTypesPlayed[2];
+
+                // --- Player status effects (all, accessed via hasStatus/getStatus) ---
+                // We build a dict of {status_name: value} for all non-trivial statuses.
+                // The adapter maps these to CombatState fields.
+                pybind11::dict statuses;
+                statuses["DOUBLE_DAMAGE"]       = (bool)p.hasStatus<PS::DOUBLE_DAMAGE>();
+                statuses["DRAW_REDUCTION"]      = (bool)p.hasStatus<PS::DRAW_REDUCTION>();
+                statuses["FRAIL"]               = p.getStatus<PS::FRAIL>();
+                statuses["INTANGIBLE"]          = p.getStatus<PS::INTANGIBLE>();
+                statuses["VULNERABLE"]          = p.getStatus<PS::VULNERABLE>();
+                statuses["WEAK"]                = p.getStatus<PS::WEAK>();
+                statuses["BIAS"]                = p.getStatus<PS::BIAS>();
+                statuses["CONFUSED"]            = (bool)p.hasStatus<PS::CONFUSED>();
+                statuses["CONSTRICTED"]         = p.getStatus<PS::CONSTRICTED>();
+                statuses["ENTANGLED"]           = (bool)p.hasStatus<PS::ENTANGLED>();
+                statuses["FASTING"]             = p.getStatus<PS::FASTING>();
+                statuses["HEX"]                 = (bool)p.hasStatus<PS::HEX>();
+                statuses["LOSE_DEXTERITY"]      = p.getStatus<PS::LOSE_DEXTERITY>();
+                statuses["LOSE_STRENGTH"]       = p.getStatus<PS::LOSE_STRENGTH>();
+                statuses["NO_BLOCK"]            = (bool)p.hasStatus<PS::NO_BLOCK>();
+                statuses["NO_DRAW"]             = (bool)p.hasStatus<PS::NO_DRAW>();
+                statuses["WRAITH_FORM"]         = p.getStatus<PS::WRAITH_FORM>();
+                statuses["BARRICADE"]           = (bool)p.hasStatus<PS::BARRICADE>();
+                statuses["BLASPHEMER"]          = (bool)p.hasStatus<PS::BLASPHEMER>();
+                statuses["CORRUPTION"]          = (bool)p.hasStatus<PS::CORRUPTION>();
+                statuses["ELECTRO"]             = (bool)p.hasStatus<PS::ELECTRO>();
+                statuses["SURROUNDED"]          = (bool)p.hasStatus<PS::SURROUNDED>();
+                statuses["MASTER_REALITY"]      = (bool)p.hasStatus<PS::MASTER_REALITY>();
+                statuses["PEN_NIB"]             = (bool)p.hasStatus<PS::PEN_NIB>();
+                statuses["WRATH_NEXT_TURN"]     = (bool)p.hasStatus<PS::WRATH_NEXT_TURN>();
+                statuses["AMPLIFY"]             = p.getStatus<PS::AMPLIFY>();
+                statuses["BLUR"]                = p.getStatus<PS::BLUR>();
+                statuses["BUFFER"]              = p.getStatus<PS::BUFFER>();
+                statuses["COLLECT"]             = p.getStatus<PS::COLLECT>();
+                statuses["DOUBLE_TAP"]          = p.getStatus<PS::DOUBLE_TAP>();
+                statuses["DUPLICATION"]         = p.getStatus<PS::DUPLICATION>();
+                statuses["ECHO_FORM"]           = p.getStatus<PS::ECHO_FORM>();
+                statuses["FREE_ATTACK_POWER"]   = p.getStatus<PS::FREE_ATTACK_POWER>();
+                statuses["REBOUND"]             = p.getStatus<PS::REBOUND>();
+                statuses["MANTRA"]              = p.getStatus<PS::MANTRA>();
+                statuses["ACCURACY"]            = p.getStatus<PS::ACCURACY>();
+                statuses["AFTER_IMAGE"]         = p.getStatus<PS::AFTER_IMAGE>();
+                statuses["BATTLE_HYMN"]         = p.getStatus<PS::BATTLE_HYMN>();
+                statuses["BRUTALITY"]           = p.getStatus<PS::BRUTALITY>();
+                statuses["BURST"]               = p.getStatus<PS::BURST>();
+                statuses["COMBUST"]             = p.getStatus<PS::COMBUST>();
+                statuses["CREATIVE_AI"]         = p.getStatus<PS::CREATIVE_AI>();
+                statuses["DARK_EMBRACE"]        = p.getStatus<PS::DARK_EMBRACE>();
+                statuses["DEMON_FORM"]          = p.getStatus<PS::DEMON_FORM>();
+                statuses["DEVA"]                = p.getStatus<PS::DEVA>();
+                statuses["DEVOTION"]            = p.getStatus<PS::DEVOTION>();
+                statuses["DRAW_CARD_NEXT_TURN"] = p.getStatus<PS::DRAW_CARD_NEXT_TURN>();
+                statuses["ENERGIZED"]           = p.getStatus<PS::ENERGIZED>();
+                statuses["ENVENOM"]             = p.getStatus<PS::ENVENOM>();
+                statuses["ESTABLISHMENT"]       = p.getStatus<PS::ESTABLISHMENT>();
+                statuses["EVOLVE"]              = p.getStatus<PS::EVOLVE>();
+                statuses["FEEL_NO_PAIN"]        = p.getStatus<PS::FEEL_NO_PAIN>();
+                statuses["FIRE_BREATHING"]      = p.getStatus<PS::FIRE_BREATHING>();
+                statuses["FLAME_BARRIER"]       = p.getStatus<PS::FLAME_BARRIER>();
+                statuses["FOCUS"]               = p.focus;
+                statuses["FORESIGHT"]           = p.getStatus<PS::FORESIGHT>();
+                statuses["HELLO_WORLD"]         = p.getStatus<PS::HELLO_WORLD>();
+                statuses["INFINITE_BLADES"]     = p.getStatus<PS::INFINITE_BLADES>();
+                statuses["JUGGERNAUT"]          = p.getStatus<PS::JUGGERNAUT>();
+                statuses["LIKE_WATER"]          = p.getStatus<PS::LIKE_WATER>();
+                statuses["LOOP"]                = p.getStatus<PS::LOOP>();
+                statuses["MAGNETISM"]           = p.getStatus<PS::MAGNETISM>();
+                statuses["MAYHEM"]              = p.getStatus<PS::MAYHEM>();
+                statuses["METALLICIZE"]         = p.getStatus<PS::METALLICIZE>();
+                statuses["NEXT_TURN_BLOCK"]     = p.getStatus<PS::NEXT_TURN_BLOCK>();
+                statuses["NOXIOUS_FUMES"]       = p.getStatus<PS::NOXIOUS_FUMES>();
+                statuses["OMEGA"]               = p.getStatus<PS::OMEGA>();
+                statuses["PANACHE"]             = p.getStatus<PS::PANACHE>();
+                statuses["PHANTASMAL"]          = p.getStatus<PS::PHANTASMAL>();
+                statuses["PLATED_ARMOR"]        = p.getStatus<PS::PLATED_ARMOR>();
+                statuses["RAGE"]                = p.getStatus<PS::RAGE>();
+                statuses["REGEN"]               = p.getStatus<PS::REGEN>();
+                statuses["RITUAL"]              = p.getStatus<PS::RITUAL>();
+                statuses["RUPTURE"]             = p.getStatus<PS::RUPTURE>();
+                statuses["SADISTIC"]            = p.getStatus<PS::SADISTIC>();
+                statuses["STATIC_DISCHARGE"]    = p.getStatus<PS::STATIC_DISCHARGE>();
+                statuses["THORNS"]              = p.getStatus<PS::THORNS>();
+                statuses["THOUSAND_CUTS"]       = p.getStatus<PS::THOUSAND_CUTS>();
+                statuses["TOOLS_OF_THE_TRADE"]  = p.getStatus<PS::TOOLS_OF_THE_TRADE>();
+                statuses["VIGOR"]               = p.getStatus<PS::VIGOR>();
+                statuses["WAVE_OF_THE_HAND"]    = p.getStatus<PS::WAVE_OF_THE_HAND>();
+                statuses["EQUILIBRIUM"]         = p.getStatus<PS::EQUILIBRIUM>();
+                statuses["ARTIFACT"]            = p.artifact;
+                statuses["DEXTERITY"]           = p.dexterity;
+                statuses["STRENGTH"]            = p.strength;
+                statuses["THE_BOMB"]            = static_cast<int>(p.bomb3);
+                d["statuses"] = statuses;
+
+                // --- Relic presence bits (two uint64 packed as Python ints) ---
+                d["relic_bits0"] = static_cast<unsigned long long>(p.relicBits0);
+                d["relic_bits1"] = static_cast<unsigned long long>(p.relicBits1);
+
+                // --- Potions ---
+                d["potion_count"]    = bc.potionCount;
+                d["potion_capacity"] = bc.potionCapacity;
+                pybind11::list potions;
+                for (int i = 0; i < bc.potionCapacity && i < 5; ++i) {
+                    potions.append(std::string(potionEnumNames[static_cast<int>(bc.potions[i])]));
+                }
+                d["potions"] = potions;
+
+                // --- Card piles ---
+                auto make_card_list = [&card_to_dict](auto &arr, int count) {
+                    pybind11::list lst;
+                    for (int i = 0; i < count; ++i) {
+                        lst.append(card_to_dict(arr[i]));
+                    }
+                    return lst;
+                };
+                d["hand"] = make_card_list(bc.cards.hand, bc.cards.cardsInHand);
+
+                pybind11::list draw;
+                for (const auto &c : bc.cards.drawPile) draw.append(card_to_dict(c));
+                d["draw_pile"] = draw;
+
+                pybind11::list discard;
+                for (const auto &c : bc.cards.discardPile) discard.append(card_to_dict(c));
+                d["discard_pile"] = discard;
+
+                pybind11::list exhaust;
+                for (const auto &c : bc.cards.exhaustPile) exhaust.append(card_to_dict(c));
+                d["exhaust_pile"] = exhaust;
+
+                // --- Monsters ---
+                d["monster_count"] = bc.monsters.monsterCount;
+                pybind11::list monsters;
+                for (int i = 0; i < bc.monsters.monsterCount && i < 5; ++i) {
+                    monsters.append(monster_to_dict(bc.monsters.arr[i]));
+                }
+                d["monsters"] = monsters;
+
+                // --- Combat metadata ---
+                d["encounter"]   = std::string(monsterEncounterEnumNames[static_cast<int>(bc.encounter)]);
+                d["input_state"] = static_cast<int>(bc.inputState);  // adapter maps int -> name
+                d["is_over"]     = (bc.outcome != Outcome::UNDECIDED);
+                d["outcome"]     = static_cast<int>(bc.outcome);
+
+                // --- Card select info ---
+                {
+                    const auto &csi = bc.cardSelectInfo;
+                    pybind11::dict csd;
+                    csd["task"]          = std::string(cardSelectTaskStrings[static_cast<int>(csi.cardSelectTask)]);
+                    csd["pick_count"]    = csi.pickCount;
+                    csd["can_pick_zero"] = csi.canPickZero;
+                    csd["can_pick_any"]  = csi.canPickAnyNumber;
+                    pybind11::list cscards;
+                    for (int i = 0; i < 3; ++i) {
+                        cscards.append(std::string(cardStringIds[static_cast<int>(csi.cards[i])]));
+                    }
+                    csd["cards"] = cscards;
+                    d["card_select_info"] = csd;
+                }
+
+                return d;
+            },
+            "Extract complete battle state as a Python dict for use by LightspeedCombatAdapter");
+
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
 #else
