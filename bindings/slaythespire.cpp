@@ -1254,7 +1254,8 @@ PYBIND11_MODULE(slaythespire, m) {
     };
 
     // Helper lambda: convert a Monster to a Python dict
-    auto monster_to_dict = [](const Monster &m) -> pybind11::dict {
+    // bc is needed to compute calculateDamageToPlayer for intent_damage.
+    auto monster_to_dict = [](const Monster &m, const BattleContext &bc) -> pybind11::dict {
         pybind11::dict d;
         d["monster_id"]       = std::string(monsterIdStrings[static_cast<int>(m.id)]);
         d["current_hp"]       = m.curHp;
@@ -1265,6 +1266,17 @@ PYBIND11_MODULE(slaythespire, m) {
         d["move_history_1"]   = std::string(monsterMoveStrings[static_cast<int>(m.moveHistory[1])]);
         // Note: current intended move is whatever was last set via setMove(); we expose move_history[0]
         // as the "current" move since the game writes the current move there before executing it.
+        // Intent damage: displayed per-hit damage after all modifiers (monster strength, weak, player vulnerable, etc.)
+        {
+            DamageInfo di = m.getMoveBaseDamage(bc);
+            if (di.attackCount > 0 && di.damage > 0) {
+                d["intent_damage"]    = m.calculateDamageToPlayer(bc, di.damage);
+                d["intent_hit_count"] = di.attackCount;
+            } else {
+                d["intent_damage"]    = 0;
+                d["intent_hit_count"] = 0;
+            }
+        }
         // Status effects
         d["strength"]         = m.strength;
         d["vulnerable"]       = m.vulnerable;
@@ -1630,9 +1642,23 @@ PYBIND11_MODULE(slaythespire, m) {
                 d["monster_count"] = bc.monsters.monsterCount;
                 pybind11::list monsters;
                 for (int i = 0; i < bc.monsters.monsterCount && i < 5; ++i) {
-                    monsters.append(monster_to_dict(bc.monsters.arr[i]));
+                    monsters.append(monster_to_dict(bc.monsters.arr[i], bc));
                 }
                 d["monsters"] = monsters;
+
+                // --- Combat metadata extras ---
+                d["stolen_gold_check"]      = bc.requiresStolenGoldCheck();
+                d["last_targeted_monster"]  = static_cast<int>(bc.player.lastTargetedMonster);
+                // Stasis cards (Bronze Automaton): convert CardId to string ID, "NONE" for INVALID
+                {
+                    const auto &sc = bc.cards.stasisCards;
+                    d["stasis_card_0"] = (sc[0].id != CardId::INVALID)
+                        ? std::string(cardStringIds[static_cast<int>(sc[0].id)])
+                        : std::string("NONE");
+                    d["stasis_card_1"] = (sc[1].id != CardId::INVALID)
+                        ? std::string(cardStringIds[static_cast<int>(sc[1].id)])
+                        : std::string("NONE");
+                }
 
                 // --- Combat metadata ---
                 d["encounter"]   = std::string(monsterEncounterEnumNames[static_cast<int>(bc.encounter)]);
