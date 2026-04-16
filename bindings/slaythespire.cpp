@@ -1359,7 +1359,10 @@ PYBIND11_MODULE(slaythespire, m) {
 
         // Card-select screen choices (CARD_SELECT input state)
         .def("choose_armaments_card",
-            [](BattleContext &bc, int hand_idx) { bc.chooseArmamentsCard(hand_idx); },
+            [](BattleContext &bc, int hand_idx) {
+                if (hand_idx < 0 || hand_idx >= bc.cards.cardsInHand) return;
+                bc.chooseArmamentsCard(hand_idx);
+            },
             "Choose a card in hand to upgrade (Armaments)")
         .def("choose_discovery_card",
             [](BattleContext &bc, int card_id_int) {
@@ -1367,25 +1370,40 @@ PYBIND11_MODULE(slaythespire, m) {
             },
             "Choose one of three Discovery card options by CardId int")
         .def("choose_dual_wield_card",
-            [](BattleContext &bc, int hand_idx) { bc.chooseDualWieldCard(hand_idx); },
+            [](BattleContext &bc, int hand_idx) {
+                if (hand_idx < 0 || hand_idx >= bc.cards.cardsInHand) return;
+                bc.chooseDualWieldCard(hand_idx);
+            },
             "Choose a card in hand to duplicate (Dual Wield)")
         .def("choose_exhaust_one_card",
-            [](BattleContext &bc, int hand_idx) { bc.chooseExhaustOneCard(hand_idx); },
+            [](BattleContext &bc, int hand_idx) {
+                if (hand_idx < 0 || hand_idx >= bc.cards.cardsInHand) return;
+                bc.chooseExhaustOneCard(hand_idx);
+            },
             "Exhaust a card in hand (Exhaust One select screen)")
         .def("choose_exhume_card",
             [](BattleContext &bc, int exhaust_idx) { bc.chooseExhumeCard(exhaust_idx); },
             "Exhume a card from the exhaust pile")
         .def("choose_forethought_card",
-            [](BattleContext &bc, int hand_idx) { bc.chooseForethoughtCard(hand_idx); },
+            [](BattleContext &bc, int hand_idx) {
+                if (hand_idx < 0 || hand_idx >= bc.cards.cardsInHand) return;
+                bc.chooseForethoughtCard(hand_idx);
+            },
             "Choose a card in hand to place on bottom of draw pile (Forethought)")
         .def("choose_headbutt_card",
             [](BattleContext &bc, int discard_idx) { bc.chooseHeadbuttCard(discard_idx); },
             "Choose a card in discard pile to put on top of draw pile (Headbutt)")
         .def("choose_recycle_card",
-            [](BattleContext &bc, int hand_idx) { bc.chooseRecycleCard(hand_idx); },
+            [](BattleContext &bc, int hand_idx) {
+                if (hand_idx < 0 || hand_idx >= bc.cards.cardsInHand) return;
+                bc.chooseRecycleCard(hand_idx);
+            },
             "Choose a card in hand to recycle (gain energy equal to cost)")
         .def("choose_warcry_card",
-            [](BattleContext &bc, int hand_idx) { bc.chooseWarcryCard(hand_idx); },
+            [](BattleContext &bc, int hand_idx) {
+                if (hand_idx < 0 || hand_idx >= bc.cards.cardsInHand) return;
+                bc.chooseWarcryCard(hand_idx);
+            },
             "Choose a card in hand to put on top of draw pile (Warcry)")
         .def("choose_discard_to_hand_card",
             [](BattleContext &bc, int discard_idx, bool for_zero_cost) {
@@ -1419,8 +1437,8 @@ PYBIND11_MODULE(slaythespire, m) {
             [](const BattleContext &bc) { return bc.inputState; },
             "Current InputState (PLAYER_NORMAL, CARD_SELECT, etc.)")
         .def_property_readonly("outcome",
-            [](const BattleContext &bc) { return bc.outcome; },
-            "Current Outcome (UNDECIDED, PLAYER_VICTORY, PLAYER_LOSS)")
+            [](const BattleContext &bc) { return static_cast<int>(bc.outcome); },
+            "Current Outcome as int (0=UNDECIDED, 1=PLAYER_VICTORY, 2=PLAYER_LOSS)")
         .def_property_readonly("is_over",
             [](const BattleContext &bc) { return bc.outcome != Outcome::UNDECIDED; },
             "True if the battle has ended (victory or defeat)")
