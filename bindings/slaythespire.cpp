@@ -1427,6 +1427,20 @@ PYBIND11_MODULE(slaythespire, m) {
             },
             "Keep the specified hand indices; discard the rest (Gamble)")
 
+        // Use a potion from a potion slot
+        .def("drink_potion",
+            [](BattleContext &bc, int slot_idx, int target_idx) {
+                if (slot_idx < 0 || slot_idx >= bc.potionCapacity) return;
+                if (bc.potions[slot_idx] == Potion::EMPTY_POTION_SLOT) return;
+                if (bc.potions[slot_idx] == Potion::FAIRY_POTION) return;  // auto-triggers on death; cannot be manually used
+                bc.drinkPotion(slot_idx, target_idx);
+                bc.inputState = InputState::EXECUTING_ACTIONS;
+                bc.executeActions();
+            },
+            pybind11::arg("slot_idx"),
+            pybind11::arg("target_idx") = 0,
+            "Use the potion in slot_idx targeting monster at target_idx (default 0); pumps the action queue")
+
         // Exit battle and propagate results back to GameContext
         .def("exit_battle",
             [](BattleContext &bc, GameContext &gc) { bc.exitBattle(gc); },

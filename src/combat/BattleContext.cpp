@@ -2426,9 +2426,12 @@ void BattleContext::drinkPotion(int idx, int target) {
             addToBot(Actions::DebuffEnemy<MS::WEAK>(target, hasBark ? 6 : 3, false));
             break;
 
+        case Potion::FAIRY_POTION:
+            // Auto-triggers on player death — manually drinking it is a no-op.
+            break;
+
         case Potion::INVALID:
         case Potion::EMPTY_POTION_SLOT:
-        case Potion::FAIRY_POTION:
         default:
             std::cerr << seed << "invalid drink potion: " << static_cast<int>(p) << std::endl;
             assert(false);
