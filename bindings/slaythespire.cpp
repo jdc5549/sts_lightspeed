@@ -1716,7 +1716,48 @@ PYBIND11_MODULE(slaythespire, m) {
 
                 return d;
             },
-            "Extract complete battle state as a Python dict for use by LightspeedCombatAdapter");
+            "Extract complete battle state as a Python dict for use by LightspeedCombatAdapter")
+
+        // Clone with fresh RNG streams (and optional draw-pile reshuffle)
+        .def("clone_with_fresh_rng",
+            [](const BattleContext &bc, std::uint64_t seed, bool reshuffle_draw_pile) -> BattleContext {
+                BattleContext copy = bc;
+                copy.aiRng         = sts::Random(seed + 0);
+                copy.cardRandomRng = sts::Random(seed + 1);
+                copy.miscRng       = sts::Random(seed + 2);
+                copy.monsterHpRng  = sts::Random(seed + 3);
+                copy.potionRng     = sts::Random(seed + 4);
+                copy.shuffleRng    = sts::Random(seed + 5);
+                if (reshuffle_draw_pile) {
+                    auto &dp = copy.cards.drawPile;
+                    java::Collections::shuffle(dp.begin(), dp.end(),
+                        java::Random(copy.shuffleRng.randomLong()));
+                }
+                return copy;
+            },
+            pybind11::arg("seed"),
+            pybind11::arg("reshuffle_draw_pile") = false,
+            "Deep-copy bc, reseed all 6 RNG streams from derived seeds, optionally reshuffle draw pile")
+
+        // RNG counter read-only properties
+        .def_property_readonly("cards_drawn",
+            [](const BattleContext &bc) { return bc.cardsDrawn; },
+            "Number of cards drawn so far in the battle")
+        .def_property_readonly("card_random_rng_counter",
+            [](const BattleContext &bc) { return bc.cardRandomRng.counter; },
+            "cardRandomRng usage counter")
+        .def_property_readonly("ai_rng_counter",
+            [](const BattleContext &bc) { return bc.aiRng.counter; },
+            "aiRng usage counter")
+        .def_property_readonly("misc_rng_counter",
+            [](const BattleContext &bc) { return bc.miscRng.counter; },
+            "miscRng usage counter")
+        .def_property_readonly("potion_rng_counter",
+            [](const BattleContext &bc) { return bc.potionRng.counter; },
+            "potionRng usage counter")
+        .def_property_readonly("shuffle_rng_counter",
+            [](const BattleContext &bc) { return bc.shuffleRng.counter; },
+            "shuffleRng usage counter (exposed for completeness; excluded from stochasticity detection)");
 
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
