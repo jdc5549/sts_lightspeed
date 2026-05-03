@@ -972,6 +972,11 @@ Action Actions::CodexAction() {
 
 Action Actions::ExhaustMany(int limit) {
     return {[=] (BattleContext &bc) {
+        if (bc.cards.cardsInHand == 0) {
+            // Nothing to exhaust — auto-resolve without entering CARD_SELECT.
+            // Matches Java: Elixir Potion with empty hand is a no-op selection.
+            return;
+        }
         bc.inputState = InputState::CARD_SELECT;
         bc.cardSelectInfo.cardSelectTask = CardSelectTask::EXHAUST_MANY;
         bc.cardSelectInfo.pickCount = limit;
