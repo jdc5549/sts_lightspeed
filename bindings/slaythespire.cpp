@@ -1426,6 +1426,18 @@ PYBIND11_MODULE(slaythespire, m) {
                 bc.chooseGambleCards(fl);
             },
             "Keep the specified hand indices; discard the rest (Gamble)")
+        .def("choose_codex_card",
+            [](BattleContext &bc, int card_id_int) {
+                bc.chooseCodexCard(static_cast<CardId>(card_id_int));
+            },
+            pybind11::arg("card_id_int"),
+            "Choose a card from Nilry's Codex (pass CardId int from get_card_select_info)")
+        .def("choose_draw_to_hand_card",
+            [](BattleContext &bc, int draw_idx) {
+                bc.chooseDrawToHandCards(&draw_idx, 1);
+            },
+            pybind11::arg("draw_idx"),
+            "Draw the card at draw_idx in the draw pile to hand (Secret Technique/Weapon/Seek)")
 
         // Use a potion from a potion slot
         .def("drink_potion",
