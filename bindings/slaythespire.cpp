@@ -1757,6 +1757,13 @@ PYBIND11_MODULE(slaythespire, m) {
             pybind11::arg("reshuffle_draw_pile") = false,
             "Deep-copy bc, reseed all 6 RNG streams from derived seeds, optionally reshuffle draw pile")
 
+        // Exact deep copy preserving all RNG state
+        .def("clone",
+            [](const BattleContext &bc) -> BattleContext {
+                return bc;
+            },
+            "Deep-copy bc, preserving all RNG streams exactly (no reseeding)")
+
         // RNG counter read-only properties
         .def_property_readonly("cards_drawn",
             [](const BattleContext &bc) { return bc.cardsDrawn; },
