@@ -201,13 +201,19 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("take_reward_key",
             [](GameContext &gc) {
                 auto &r = gc.info.rewardsContainer;
-                if (r.relicCount > 0) {
-                    r.removeRelicReward(r.relicCount - 1);
+                if (r.sapphireKey) {
+                    // Sapphire key: trade out the last relic if one is present
+                    if (r.relicCount > 0) {
+                        r.removeRelicReward(r.relicCount - 1);
+                    }
+                    gc.obtainKey(Key::SAPPHIRE_KEY);
+                    r.sapphireKey = false;
+                } else if (r.emeraldKey) {
+                    gc.obtainKey(Key::EMERALD_KEY);
+                    r.emeraldKey = false;
                 }
-                gc.obtainKey(Key::SAPPHIRE_KEY);
-                r.sapphireKey = false;
             },
-            "take sapphire key from reward instead of last relic")
+            "take key (sapphire or emerald) from reward; for sapphire key removes last relic if present")
         .def("take_reward_potion",
             [](GameContext &gc, int idx) {
                 auto &r = gc.info.rewardsContainer;
