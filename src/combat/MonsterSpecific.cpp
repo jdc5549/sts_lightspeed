@@ -7,6 +7,8 @@
 #include "combat/BattleContext.h"
 #include "game/GameContext.h"
 
+#include <algorithm>
+
 using namespace sts;
 
 // returns 0, 1, 2 based on value compared to a and b

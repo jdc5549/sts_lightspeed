@@ -6,6 +6,8 @@
 #include "game/GameContext.h"
 #include "game/Game.h"
 
+#include <algorithm>
+
 using namespace sts;
 
 namespace sts {

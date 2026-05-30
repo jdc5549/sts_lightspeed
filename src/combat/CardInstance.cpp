@@ -4,6 +4,7 @@
 
 #include "combat/CardInstance.h"
 
+#include <algorithm>
 #include "combat/BattleContext.h"
 
 using namespace sts;

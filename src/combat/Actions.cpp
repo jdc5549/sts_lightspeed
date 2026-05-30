@@ -6,6 +6,8 @@
 #include "combat/BattleContext.h"
 #include "game/Game.h"
 
+#include <algorithm>
+
 using namespace sts;
 
 Action Actions::SetState(InputState state) {
