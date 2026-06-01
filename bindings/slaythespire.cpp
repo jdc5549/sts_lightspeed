@@ -109,6 +109,11 @@ PYBIND11_MODULE(slaythespire, m) {
              [](GameContext &gc, Card card) { gc.deck.obtain(gc, card); },
              "add a card to the deck"
         )
+        .def("obtain_relic",
+             [](GameContext &gc, RelicId relic) { gc.obtainRelic(relic); },
+             pybind11::arg("relic"),
+             "add a relic to the GameContext (mirrors BaseMod console `relic add`)"
+        )
         .def("remove_card",
             [](GameContext &gc, int idx) {
                 if (idx < 0 || idx >= gc.deck.size()) {
@@ -1323,6 +1328,13 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("init",
             [](BattleContext &bc, GameContext &gc) { bc.init(gc); },
             "Initialise BattleContext from a GameContext (sets up monsters, shuffles deck, etc.)")
+
+        // Initialise with an explicit encounter (mirrors BaseMod console `fight <encounter>`);
+        // used by the oracle to construct reproducible injected combats.
+        .def("init",
+            [](BattleContext &bc, GameContext &gc, MonsterEncounter encounter) { bc.init(gc, encounter); },
+            pybind11::arg("gc"), pybind11::arg("encounter"),
+            "Initialise BattleContext from a GameContext with a chosen MonsterEncounter")
 
         // Advance until a player-decision point is reached (PLAYER_NORMAL or CARD_SELECT)
         // or the battle ends (isBattleOver == true).
