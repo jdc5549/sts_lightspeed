@@ -109,6 +109,21 @@ PYBIND11_MODULE(slaythespire, m) {
              [](GameContext &gc, Card card) { gc.deck.obtain(gc, card); },
              "add a card to the deck"
         )
+        .def("prepend_card",
+             [](GameContext &gc, Card card) {
+                 // BaseMod 'deck add' calls masterDeck.addToTop() which inserts at
+                 // index 0 (front).  Use obtain() for metadata tracking then rotate
+                 // the newly-appended card to the front so shuffle RNG matches.
+                 int old_size = gc.deck.size();
+                 gc.deck.obtain(gc, card);
+                 if (gc.deck.size() > old_size) {
+                     std::rotate(gc.deck.cards.begin(),
+                                 gc.deck.cards.begin() + old_size,
+                                 gc.deck.cards.end());
+                 }
+             },
+             "add a card to the front of the deck (mirrors BaseMod 'deck add' addToTop)"
+        )
         .def("obtain_relic",
              [](GameContext &gc, RelicId relic) { gc.obtainRelic(relic); },
              pybind11::arg("relic"),

@@ -364,6 +364,7 @@ void Monster::attackedUnblockedHelper(BattleContext &bc, int damage) { // todo, 
     } else if (hasStatus<MS::CURL_UP>()) {
         bc.addToBot(Actions::MonsterGainBlock(this->idx, getStatus<MS::CURL_UP>()) );
         setHasStatus<MS::CURL_UP>(false);
+        uniquePower0 = 0;
 
     } else if (hasStatus<MS::FLIGHT>() && damage > 0) {
         auto flight = getStatus<MS::FLIGHT>();
@@ -392,9 +393,10 @@ void Monster::attackedUnblockedHelper(BattleContext &bc, int damage) { // todo, 
         bc.addToTop( Actions::DamagePlayer(getStatus<MS::THORNS>()) );
 
     } else if (hasStatus<MS::ASLEEP>()) {
-        // lagavulin
+        // lagavulin: first hit wakes it, showing STUN intent before next turn
         setHasStatus<MS::ASLEEP>(false);
         decrementStatus<MS::METALLICIZE>(8);
+        setMove(MMID::LAGAVULIN_WAKING_UP);
 
     } else if (hasStatus<MS::SHIFTING>()) {
         addDebuff<MS::STRENGTH>(-damage);
@@ -452,9 +454,10 @@ void Monster::damageUnblockedHelper(BattleContext &bc, int damage) {
         setStatus<MS::INVINCIBLE>(getStatus<MS::INVINCIBLE>() - damage);
     }
         if (hasStatus<MS::ASLEEP>()) {
-        // lagavulin
+        // lagavulin: first hit wakes it, showing STUN intent before next turn
         setHasStatus<MS::ASLEEP>(false);
         decrementStatus<MS::METALLICIZE>(8);
+        setMove(MMID::LAGAVULIN_WAKING_UP);
     }
     if (hasStatus<MS::SHIFTING>()) {
         addDebuff<MS::STRENGTH>(-damage);
