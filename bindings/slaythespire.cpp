@@ -109,6 +109,26 @@ PYBIND11_MODULE(slaythespire, m) {
              [](GameContext &gc, Card card) { gc.deck.obtain(gc, card); },
              "add a card to the deck"
         )
+        .def("prepend_card",
+             [](GameContext &gc, Card card) {
+                 // BaseMod 'deck add' calls masterDeck.addToTop() which inserts at
+                 // index 0 (front).  Use obtain() for metadata tracking then rotate
+                 // the newly-appended card to the front so shuffle RNG matches.
+                 int old_size = gc.deck.size();
+                 gc.deck.obtain(gc, card);
+                 if (gc.deck.size() > old_size) {
+                     std::rotate(gc.deck.cards.begin(),
+                                 gc.deck.cards.begin() + old_size,
+                                 gc.deck.cards.end());
+                 }
+             },
+             "add a card to the front of the deck (mirrors BaseMod 'deck add' addToTop)"
+        )
+        .def("obtain_relic",
+             [](GameContext &gc, RelicId relic) { gc.obtainRelic(relic); },
+             pybind11::arg("relic"),
+             "add a relic to the GameContext (mirrors BaseMod console `relic add`)"
+        )
         .def("remove_card",
             [](GameContext &gc, int idx) {
                 if (idx < 0 || idx >= gc.deck.size()) {
@@ -1326,6 +1346,13 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("init",
             [](BattleContext &bc, GameContext &gc) { bc.init(gc); },
             "Initialise BattleContext from a GameContext (sets up monsters, shuffles deck, etc.)")
+
+        // Initialise with an explicit encounter (mirrors BaseMod console `fight <encounter>`);
+        // used by the oracle to construct reproducible injected combats.
+        .def("init",
+            [](BattleContext &bc, GameContext &gc, MonsterEncounter encounter) { bc.init(gc, encounter); },
+            pybind11::arg("gc"), pybind11::arg("encounter"),
+            "Initialise BattleContext from a GameContext with a chosen MonsterEncounter")
 
         // Advance until a player-decision point is reached (PLAYER_NORMAL or CARD_SELECT)
         // or the battle ends (isBattleOver == true).

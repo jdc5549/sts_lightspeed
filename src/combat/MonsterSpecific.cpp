@@ -896,6 +896,14 @@ void Monster::takeTurn(BattleContext &bc) {     // todo, maybe for monsters that
             bc.noOpRollMove();
             break;
 
+        case MMID::LAGAVULIN_WAKING_UP:
+            // Woken by player dealing damage; shows STUN intent for one turn.
+            // No game-state effect (Java just shows "STUNNED" text).
+            // Transitions to ATTACK (mirrors Java getMove() when isOut=true).
+            setMove(MMID::LAGAVULIN_ATTACK);
+            bc.noOpRollMove();
+            break;
+
         // ************ LOOTER ************
 
         case MMID::LOOTER_ESCAPE: { // 3
