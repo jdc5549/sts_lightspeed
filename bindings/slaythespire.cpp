@@ -349,7 +349,10 @@ PYBIND11_MODULE(slaythespire, m) {
                 }
                 return result;
             },
-            "return list of deck indices that are bottled (excluded from REMOVE/TOKE selection)");
+            "return list of deck indices that are bottled (excluded from REMOVE/TOKE selection)")
+        .def("clone",
+            [](const GameContext &gc) { return gc; },
+            "return an independent value copy of this GameContext (deep copy of all fields except the shared Map)");
 
     pybind11::class_<RelicInstance> relic(m, "Relic");
     relic.def_readwrite("id", &RelicInstance::id)
