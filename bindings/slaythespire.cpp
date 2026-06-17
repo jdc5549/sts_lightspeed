@@ -371,8 +371,17 @@ PYBIND11_MODULE(slaythespire, m) {
             },
             "return list of deck indices that are bottled (excluded from REMOVE/TOKE selection)")
         .def("clone",
-            [](const GameContext &gc) { return gc; },
-            "return an independent value copy of this GameContext (deep copy of all fields except the shared Map)");
+            [](const GameContext &gc) {
+                GameContext copy = gc;
+                // Deep-copy the Map so transitionToAct() on the original doesn't
+                // corrupt this clone's map (transitionToAct modifies *map in-place,
+                // and all shared_ptr copies share the same underlying object).
+                if (gc.map) {
+                    copy.map = std::make_shared<Map>(*gc.map);
+                }
+                return copy;
+            },
+            "return an independent value copy of this GameContext (deep copy of all fields including Map)");
 
     pybind11::class_<RelicInstance> relic(m, "Relic");
     relic.def_readwrite("id", &RelicInstance::id)

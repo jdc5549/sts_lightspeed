@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iostream>
 
 #include "constants/RelicPools.h"
 #include "constants/CardPools.h"
@@ -842,6 +843,10 @@ void GameContext::transitionToMapNode(int mapNodeX) {
         }
 
         default:
+            std::cerr << "transitionToMapNode: unhandled room="
+                      << roomStrings[static_cast<int>(curRoom)]
+                      << " x=" << curMapNodeX << " y=" << curMapNodeY
+                      << " floor=" << floorNum << " act=" << act << std::endl;
             assert(false);
     }
 
