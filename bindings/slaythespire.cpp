@@ -167,6 +167,12 @@ PYBIND11_MODULE(slaythespire, m) {
              pybind11::arg("seed"),
              "reseed all future-decision RNGs; call after state injection to decouple from original run history"
         )
+        .def("transition_to_act",
+             [](GameContext &gc, int targetAct) { gc.transitionToAct(targetAct); },
+             pybind11::arg("target_act"),
+             "update the gc map, monster list, and event lists for target_act (2 or 3); "
+             "also heals the player — re-inject cur_hp/max_hp afterwards for mid-run injection"
+        )
         .def("remove_card",
             [](GameContext &gc, int idx) {
                 if (idx < 0 || idx >= gc.deck.size()) {
