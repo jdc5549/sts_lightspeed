@@ -129,6 +129,44 @@ PYBIND11_MODULE(slaythespire, m) {
              pybind11::arg("relic"),
              "add a relic to the GameContext (mirrors BaseMod console `relic add`)"
         )
+        .def("inject_relic_silent",
+             [](GameContext &gc, RelicId relic, int data) {
+                 if (!gc.relics.has(relic)) {
+                     gc.relics.add({relic, data});
+                 }
+             },
+             pybind11::arg("relic"),
+             pybind11::arg("data") = 0,
+             "add relic without triggering on-equip effects; use for mid-run state injection"
+        )
+        .def("remove_relic_silent",
+             [](GameContext &gc, RelicId relic) {
+                 if (gc.relics.has(relic)) {
+                     gc.relics.remove(relic);
+                 }
+             },
+             pybind11::arg("relic"),
+             "remove relic without triggering on-remove effects; use for mid-run state injection"
+        )
+        .def("reseed_future_rngs",
+             [](GameContext &gc, std::uint64_t seed) {
+                 gc.cardRng       = sts::Random(seed ^ 0ULL);
+                 gc.relicRng      = sts::Random(seed ^ 1ULL);
+                 gc.potionRng     = sts::Random(seed ^ 2ULL);
+                 gc.eventRng      = sts::Random(seed ^ 3ULL);
+                 gc.monsterRng    = sts::Random(seed ^ 4ULL);
+                 gc.monsterHpRng  = sts::Random(seed ^ 5ULL);
+                 gc.merchantRng   = sts::Random(seed ^ 6ULL);
+                 gc.shuffleRng    = sts::Random(seed ^ 7ULL);
+                 gc.mathUtilRng   = sts::Random(seed ^ 8ULL);
+                 gc.miscRng       = sts::Random(seed ^ 9ULL);
+                 gc.treasureRng   = sts::Random(seed ^ 10ULL);
+                 gc.aiRng         = sts::Random(seed ^ 11ULL);
+                 gc.cardRandomRng = sts::Random(seed ^ 12ULL);
+             },
+             pybind11::arg("seed"),
+             "reseed all future-decision RNGs; call after state injection to decouple from original run history"
+        )
         .def("remove_card",
             [](GameContext &gc, int idx) {
                 if (idx < 0 || idx >= gc.deck.size()) {
@@ -345,6 +383,7 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("cur_hp", &GameContext::curHp)
         .def_readwrite("max_hp", &GameContext::maxHp)
         .def_readwrite("gold", &GameContext::gold)
+        .def_readwrite("potion_capacity", &GameContext::potionCapacity)
 
         .def_readwrite("blue_key", &GameContext::blueKey)
         .def_readwrite("green_key", &GameContext::greenKey)
