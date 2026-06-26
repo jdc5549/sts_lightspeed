@@ -1101,8 +1101,9 @@ void GameContext::enterBossTreasureRoom() {
         info.bossRelics[i] = returnRandomRelic(RelicTier::BOSS);
     }
 
-    regainControlAction = [=](GameContext &gc) {
-        gc.transitionToAct(act+1);
+    int targetAct = act + 1;
+    regainControlAction = [targetAct](GameContext &gc) {
+        gc.transitionToAct(targetAct);
     };
 }
 
@@ -3467,8 +3468,17 @@ void GameContext::chooseEventOption(int idx) {
 
         case Event::UPGRADE_SHRINE: {
             if (idx == 0) {
-                openCardSelectScreen(CardSelectScreenType::UPGRADE, 1);
-
+                // Mirror Java: only open CARD_SELECT if there are upgradable cards;
+                // otherwise treat as "Leave" (fully-upgraded deck edge case).
+                bool hasUpgradable = false;
+                for (int i = 0; i < deck.size(); ++i) {
+                    if (deck.cards[i].canUpgrade()) { hasUpgradable = true; break; }
+                }
+                if (hasUpgradable) {
+                    openCardSelectScreen(CardSelectScreenType::UPGRADE, 1);
+                } else {
+                    regainControl();
+                }
             } else if (idx == 1) {
                 regainControl();
 
