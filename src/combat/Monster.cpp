@@ -368,10 +368,17 @@ void Monster::attackedUnblockedHelper(BattleContext &bc, int damage) { // todo, 
 
     } else if (hasStatus<MS::FLIGHT>() && damage > 0) {
         auto flight = getStatus<MS::FLIGHT>();
-        if (flight == 1) {
+        if (flight <= 1) {
+            // Flight reaches 0: the real game removes the power (ReducePowerAction
+            // → onRemove) and grounds the Byrd, so it stops halving damage and no
+            // longer decrements.  Previously flight ran negative (-1, -2, ...),
+            // which kept hasStatus<FLIGHT>() true (wrong half-damage + serialized
+            // FLIGHT -3).
             setMove(MMID::BYRD_STUNNED);
+            removeStatus<MS::FLIGHT>();
+        } else {
+            setStatus<MS::FLIGHT>(flight - 1);
         }
-        setStatus<MS::FLIGHT>(flight-1);
 
     } else if (hasStatus<MS::MALLEABLE>() || hasStatus<MS::REACTIVE>()) {
         if (hasStatus<MS::MALLEABLE>()) {
