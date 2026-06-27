@@ -1101,9 +1101,8 @@ void GameContext::enterBossTreasureRoom() {
         info.bossRelics[i] = returnRandomRelic(RelicTier::BOSS);
     }
 
-    int targetAct = act + 1;
-    regainControlAction = [targetAct](GameContext &gc) {
-        gc.transitionToAct(targetAct);
+    regainControlAction = [=](GameContext &gc) {
+        gc.transitionToAct(act+1);
     };
 }
 
@@ -2336,10 +2335,15 @@ void GameContext::chooseNeowOption(const Neow::Option &o) {
             regainControlAction(*this);
             break;
 
-        case Neow::Bonus::TEN_PERCENT_HP_BONUS:
-            maxHp += static_cast<int>(static_cast<float>(maxHp) * 0.1f);
+        case Neow::Bonus::TEN_PERCENT_HP_BONUS: {
+            // increaseMaxHp(hp_bonus, true): heals current HP by the same amount
+            // (AbstractCreature.increaseMaxHp -> heal(amount)).
+            const int hpBonus = static_cast<int>(static_cast<float>(maxHp) * 0.1f);
+            maxHp += hpBonus;
+            curHp += hpBonus;
             regainControlAction(*this);
             break;
+        }
 
         case Neow::Bonus::THREE_ENEMY_KILL:
             obtainRelic(RelicId::NEOWS_LAMENT);
@@ -2378,19 +2382,25 @@ void GameContext::chooseNeowOption(const Neow::Option &o) {
             break;
 
         case Neow::Bonus::TRANSFORM_TWO_CARDS:
+            // Mirror TRANSFORM_CARD / REMOVE_TWO: open the card-select and leave
+            // regainControlAction as the drawback set it (returnToMapAction, or
+            // the curse-adding lambda when the paired drawback is CURSE) to run
+            // after the selection completes.  The real game adds no curse here;
+            // a copy-pasted curse block (cardRng roll + deck.obtain) previously
+            // both added a spurious curse and clobbered the CURSE drawback.
             info.transformRng = NEOW_RNG;
             openCardSelectScreen(CardSelectScreenType::TRANSFORM, 2);
-            {
-                int roll = cardRng.random(static_cast<int>(9));
-                deck.obtain(*this, curseCardPool[roll]);
-            }
-            regainControlAction = returnToMapAction;
             break;
 
-        case Neow::Bonus::TWENTY_PERCENT_HP_BONUS:
-            maxHp += static_cast<int>(static_cast<float>(maxHp) * 0.2f);
+        case Neow::Bonus::TWENTY_PERCENT_HP_BONUS: {
+            // increaseMaxHp(hp_bonus * 2, true): hp_bonus is (int)(maxHp*0.1),
+            // doubled (NOT (int)(maxHp*0.2) — differs for odd max HP), and heals.
+            const int hpBonus = static_cast<int>(static_cast<float>(maxHp) * 0.1f) * 2;
+            maxHp += hpBonus;
+            curHp += hpBonus;
             regainControlAction(*this);
             break;
+        }
 
         case Neow::Bonus::BOSS_RELIC: {
             bool openedScreen = obtainRelic(returnRandomRelic(RelicTier::BOSS, false, true));
@@ -3468,17 +3478,8 @@ void GameContext::chooseEventOption(int idx) {
 
         case Event::UPGRADE_SHRINE: {
             if (idx == 0) {
-                // Mirror Java: only open CARD_SELECT if there are upgradable cards;
-                // otherwise treat as "Leave" (fully-upgraded deck edge case).
-                bool hasUpgradable = false;
-                for (int i = 0; i < deck.size(); ++i) {
-                    if (deck.cards[i].canUpgrade()) { hasUpgradable = true; break; }
-                }
-                if (hasUpgradable) {
-                    openCardSelectScreen(CardSelectScreenType::UPGRADE, 1);
-                } else {
-                    regainControl();
-                }
+                openCardSelectScreen(CardSelectScreenType::UPGRADE, 1);
+
             } else if (idx == 1) {
                 regainControl();
 
