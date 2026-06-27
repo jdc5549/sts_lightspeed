@@ -2261,7 +2261,9 @@ void BattleContext::drinkPotion(int idx, int target) {
 
 
         case Potion::BLOOD_POTION: {
-            int healAmt = static_cast<int>((static_cast<float>(player.maxHp * (hasBark ? 20 : 40)) / 100.0f));
+            // Blood Potion heals 20% of max HP, doubled to 40% with Sacred Bark
+            // (BloodPotion.getPotency).  The ternary was inverted.
+            int healAmt = static_cast<int>((static_cast<float>(player.maxHp * (hasBark ? 40 : 20)) / 100.0f));
             addToBot(Actions::HealPlayer(healAmt));
             break;
         }
