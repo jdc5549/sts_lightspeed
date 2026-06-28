@@ -2503,13 +2503,19 @@ void BattleContext::discardAtEndOfTurnHelper() {
         return;
     }
 
-    int temp = cards.cardsInHand;
-    for (int i = temp-1; i >= 0; --i) {
-        cards.notifyRemoveFromHand(cards.hand[i]);
-        cards.moveToDiscardPile(cards.hand[i]);
+    // StS discards the end-of-turn hand one card at a time in RANDOM order
+    // (DiscardAtEndOfTurnAction -> DiscardAction isRandom=true ->
+    // hand.getRandomCard(cardRandomRng) == group.get(cardRandomRng.random(size-1))).
+    // The resulting discard-pile order seeds the next reshuffle, and each pick
+    // consumes cardRandomRng, so both the order and the RNG consumption must
+    // match the real game (was a deterministic reverse-order discard with no RNG).
+    while (cards.cardsInHand > 0) {
+        const int idx = cardRandomRng.random(cards.cardsInHand - 1);
+        const CardInstance c = cards.hand[idx];
+        cards.removeFromHandAtIdx(idx);   // notifyRemoveFromHand + shift-erase
+        cards.moveToDiscardPile(c);
         ++player.cardsDiscardedThisTurn;
     }
-    cards.cardsInHand = 0;
 }
 
 void BattleContext::playTopCardInDrawPile(int monsterTargetIdx, bool exhausts) {
