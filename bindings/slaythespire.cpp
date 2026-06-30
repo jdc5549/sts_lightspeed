@@ -371,9 +371,20 @@ PYBIND11_MODULE(slaythespire, m) {
             "return the four Neow blessing options as a list of dicts with 'bonus' and 'cost' ints")
         .def("get_potions",
             [](const GameContext &gc) -> std::vector<Potion> {
-                return std::vector<Potion>(gc.potions.begin(), gc.potions.begin() + gc.potionCount);
+                // Scan all capacity slots and return the non-empty potions.
+                // The belt is sparse — slicing potions[0:potionCount] is wrong
+                // when an early slot is empty (e.g. a potion used mid-combat
+                // leaves a gap before a still-held potion in a later slot),
+                // which would drop the later potion.
+                std::vector<Potion> held;
+                for (int i = 0; i < gc.potionCapacity; ++i) {
+                    if (gc.potions[i] != Potion::EMPTY_POTION_SLOT) {
+                        held.push_back(gc.potions[i]);
+                    }
+                }
+                return held;
             },
-            "return current potion inventory (occupied slots only)");
+            "return current potion inventory (occupied slots, in slot order)");
 
     gameContext.def_readwrite("outcome", &GameContext::outcome)
         .def_readwrite("act", &GameContext::act)
