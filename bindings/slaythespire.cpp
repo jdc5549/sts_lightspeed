@@ -167,6 +167,12 @@ PYBIND11_MODULE(slaythespire, m) {
              pybind11::arg("seed"),
              "reseed all future-decision RNGs; call after state injection to decouple from original run history"
         )
+        .def("transition_to_act",
+             [](GameContext &gc, int targetAct) { gc.transitionToAct(targetAct); },
+             pybind11::arg("target_act"),
+             "update the gc map, monster list, and event lists for target_act (2 or 3); "
+             "also heals the player — re-inject cur_hp/max_hp afterwards for mid-run injection"
+        )
         .def("remove_card",
             [](GameContext &gc, int idx) {
                 if (idx < 0 || idx >= gc.deck.size()) {
@@ -365,20 +371,9 @@ PYBIND11_MODULE(slaythespire, m) {
             "return the four Neow blessing options as a list of dicts with 'bonus' and 'cost' ints")
         .def("get_potions",
             [](const GameContext &gc) -> std::vector<Potion> {
-                // Scan all capacity slots and return the non-empty potions.
-                // The belt is sparse — slicing potions[0:potionCount] is wrong
-                // when an early slot is empty (e.g. a potion used mid-combat
-                // leaves a gap before a still-held potion in a later slot),
-                // which would drop the later potion.
-                std::vector<Potion> held;
-                for (int i = 0; i < gc.potionCapacity; ++i) {
-                    if (gc.potions[i] != Potion::EMPTY_POTION_SLOT) {
-                        held.push_back(gc.potions[i]);
-                    }
-                }
-                return held;
+                return std::vector<Potion>(gc.potions.begin(), gc.potions.begin() + gc.potionCount);
             },
-            "return current potion inventory (occupied slots, in slot order)");
+            "return current potion inventory (occupied slots only)");
 
     gameContext.def_readwrite("outcome", &GameContext::outcome)
         .def_readwrite("act", &GameContext::act)
