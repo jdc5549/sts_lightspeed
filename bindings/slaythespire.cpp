@@ -200,6 +200,9 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("choose_card_select_option",
             [](GameContext &gc, int idx) { gc.chooseSelectCardScreenOption(idx); },
             "choose a card from the card select screen by index")
+        .def("choose_match_and_keep_cards",
+            [](GameContext &gc, int idx1, int idx2) { gc.chooseMatchAndKeepCards(idx1, idx2); },
+            "flip two grid tiles (0-11) for the Match and Keep! mini-game")
         .def("choose_treasure_room",
             [](GameContext &gc, bool openChest) { gc.chooseTreasureRoomOption(openChest); },
             "choose whether to open the treasure room chest")
