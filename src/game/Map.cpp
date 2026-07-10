@@ -33,7 +33,7 @@ void assignRooms(Map &map, Random &mapRng, int ascensionLevel=0);
 void assignBurningElite(Map &map, Random &mapRng);
 
 Map::Map(std::uint64_t seed, int ascension, int act, bool assignBurningElite)
-    : Map(Map::fromSeed(seed,ascension,act,assignBurningElite)) {}
+    : Map(act == 4 ? Map::act4Map() : Map::fromSeed(seed,ascension,act,assignBurningElite)) {}
 
 MapNode &Map::getNode(int x, int y) {
     return nodes.at(y).at(x);
