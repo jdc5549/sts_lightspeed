@@ -402,6 +402,13 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_property_readonly("future_rng_seed", [](const GameContext &gc) { return gc.futureRngSeed; },
             "seed driving forward-facing (not-yet-observed) randomness; equals `seed` unless determinize() "
             "has been called on this GameContext")
+        .def_property_readonly("map",
+            [](const GameContext &gc) -> Map& { return *gc.map; },
+            pybind11::return_value_policy::reference_internal,
+            "the live SpireMap for gc.act, sourced from futureRngSeed via transitionToAct(). This is the "
+            "single source of truth for the current map — read it fresh every time rather than caching by "
+            "act, since a determinized playout can legitimately regenerate it across an act boundary "
+            "(PLAN-macro-determinization.md C-4). Do NOT reconstruct a map independently from `seed`.")
         .def_readwrite("cur_map_node_x", &GameContext::curMapNodeX)
         .def_readwrite("cur_map_node_y", &GameContext::curMapNodeY)
         .def_readwrite("cur_room", &GameContext::curRoom)
