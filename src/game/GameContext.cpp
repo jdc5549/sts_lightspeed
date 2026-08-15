@@ -767,6 +767,35 @@ void GameContext::determinize(std::uint64_t detSeed) {
     aiRng         = Random(detSeed ^ 11ULL);
     cardRandomRng = Random(detSeed ^ 12ULL);
 
+    // Redraw the act-3 second boss (asc >= 20 only — mirrors generateBoss()'s
+    // own condition). A real player never observes secondBoss ahead of time
+    // (only that it can't repeat the first boss), so it belongs to the
+    // hidden/future block and must be re-rolled, same as everything else
+    // here. generateBoss() shuffles the three act-3 bosses and takes
+    // boss = shuffled[0], secondBoss = shuffled[1]; given a fixed boss, the
+    // second is therefore uniform over the other two. Redrawing uniformly
+    // from those two reproduces that distribution exactly and is realizable
+    // by construction (never repeats boss). boss itself is shown on the map
+    // — observable — and is left untouched. Acts 1/2 need no equivalent
+    // here: secondBoss isn't meaningful yet, and the eventual
+    // transitionToAct(3) generates both boss and secondBoss off this same
+    // (already determinized) monsterRng via generateMonsters()/
+    // generateBoss(), which is correct since neither is observable before
+    // that transition.
+    if (act == 3 && ascension >= 20) {
+        static const MonsterEncounter act3Bosses[3] = {
+            MonsterEncounter::AWAKENED_ONE, MonsterEncounter::TIME_EATER, MonsterEncounter::DONU_AND_DECA
+        };
+        MonsterEncounter remaining[2];
+        int n = 0;
+        for (auto candidate : act3Bosses) {
+            if (candidate != boss) {
+                remaining[n++] = candidate;
+            }
+        }
+        secondBoss = remaining[monsterRng.random(1)];
+    }
+
     // Regenerate the monster/elite queue tails, preserving consumed prefixes
     // so the result stays a realizable continuation of what was actually
     // fought. Act 4 has a hardcoded queue (THE_HEART) — skip entirely.

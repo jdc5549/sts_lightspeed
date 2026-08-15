@@ -413,6 +413,12 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("cur_map_node_y", &GameContext::curMapNodeY)
         .def_readwrite("cur_room", &GameContext::curRoom)
         .def_readwrite("boss", &GameContext::boss)
+        .def_property_readonly("second_boss",
+            [](const GameContext &gc) { return gc.secondBoss; },
+            "hidden-from-player (GameContext.h): the act-3 A20+ second boss. A real player "
+            "only knows it can't repeat `boss` -- never plan against this value ahead of the "
+            "first boss fight resolving. Read-only; exposed for determinize() verification "
+            "(PLAN-macro-determinization.md C-5), not for agent decision-making.")
 
         .def_readwrite("cur_hp", &GameContext::curHp)
         .def_readwrite("max_hp", &GameContext::maxHp)
