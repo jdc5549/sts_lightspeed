@@ -35,6 +35,7 @@ SelectScreenCard::SelectScreenCard(const Card &card, int deckIdx) : card(card), 
 
 GameContext::GameContext(CharacterClass cc, std::uint64_t seed, int ascension)
     : seed(seed),
+    futureRngSeed(seed),
     neowRng(seed),
     treasureRng(seed),
     eventRng(seed),
@@ -74,6 +75,7 @@ GameContext::GameContext(CharacterClass cc, std::uint64_t seed, int ascension)
 
 void GameContext::initFromSave(const SaveFile &s) {
     seed = s.seed;
+    futureRngSeed = seed;
 
     outcome = GameOutcome::UNDECIDED;
     ascension = s.ascension_level;
@@ -567,7 +569,16 @@ int rollElite(Random &monsterRng) {
 }
 
 void GameContext::generateElites() {
-    for(int i = 0; i < 10; ++i) {
+    generateEliteMonsters(10);
+}
+
+// Appends `count` more elite encounters to eliteMonsterList, respecting the
+// "toAdd != back()" no-repeat constraint against whatever is already there
+// (including a preserved prefix, e.g. from determinize()'s tail regeneration).
+// Factored out of generateElites() so both the full 10-entry generation and a
+// determinize()-driven partial tail regeneration share one implementation.
+void GameContext::generateEliteMonsters(int count) {
+    for(int i = 0; i < count; ++i) {
         if (eliteMonsterList.empty()) {
             eliteMonsterList.push_back(MonsterEncounterPool::elites[act-1][rollElite(monsterRng)]);
         } else {
@@ -693,6 +704,85 @@ void GameContext::populateFirstStrongEnemy(const MonsterEncounter monsters[], co
     }
 }
 
+// Regenerates the monster-queue tail (everything from monsterListOffset
+// onward) against the current monsterRng, preserving the already-consumed
+// prefix so the "differs from the last two"/slime-louse rules evaluate
+// against what was actually fought. Used only by determinize() — see
+// PLAN-macro-determinization.md D1 for the derivation of the off/W/TOTAL
+// cases below. Not called for act 4 (hardcoded queue, handled by the caller).
+void GameContext::regenerateMonsterTail() {
+    const int off = monsterListOffset;
+    const int W = (act == 1) ? 3 : 2;
+    const int TOTAL = W + 13; // W weak, 1 first-strong, 12 strong
+
+    while (monsterList.size() > off) {
+        monsterList.remove_back();
+    }
+
+    const auto *weakEnemies = MonsterEncounterPool::weakEnemies[act-1];
+    const auto *weakWeights = MonsterEncounterPool::weakWeights[act-1];
+    const int weakCount = MonsterEncounterPool::weakCount[act-1];
+
+    const auto *strongEnemies = MonsterEncounterPool::strongEnemies[act-1];
+    const auto *strongWeights = MonsterEncounterPool::strongWeights[act-1];
+    const int strongCount = MonsterEncounterPool::strongCount[act-1];
+
+    if (off < W) {
+        populateMonsterList(weakEnemies, weakWeights, weakCount, W - off);
+        populateFirstStrongEnemy(strongEnemies, strongWeights, strongCount);
+        populateMonsterList(strongEnemies, strongWeights, strongCount, 12);
+    } else if (off == W) {
+        populateFirstStrongEnemy(strongEnemies, strongWeights, strongCount);
+        populateMonsterList(strongEnemies, strongWeights, strongCount, 12);
+    } else if (off < TOTAL) {
+        populateMonsterList(strongEnemies, strongWeights, strongCount, TOTAL - off);
+    }
+    // off == TOTAL: nothing — the existing getMonsterForRoomCreation reset
+    // path handles it, now off the determinized monsterRng.
+}
+
+// Determinizes this GameContext's forward-facing (not-yet-observed) RNG state
+// in place: the future is re-rolled from detSeed rather than inheriting the
+// true continuation of the live run. See PLAN-macro-determinization.md D1 for
+// the exact contract and invariants. Callers are responsible for having
+// cloned the GameContext first if the original must be preserved — this
+// mutates *this.
+void GameContext::determinize(std::uint64_t detSeed) {
+    futureRngSeed = detSeed;
+
+    // Reseed the forward-consuming streams. Same seed^k derivation pattern as
+    // the existing reseed_future_rngs binding. Deliberately excludes neowRng
+    // (already spent by the time any playout runs).
+    cardRng       = Random(detSeed ^ 0ULL);
+    relicRng      = Random(detSeed ^ 1ULL);
+    potionRng     = Random(detSeed ^ 2ULL);
+    eventRng      = Random(detSeed ^ 3ULL);
+    monsterRng    = Random(detSeed ^ 4ULL);
+    monsterHpRng  = Random(detSeed ^ 5ULL);
+    merchantRng   = Random(detSeed ^ 6ULL);
+    shuffleRng    = Random(detSeed ^ 7ULL);
+    mathUtilRng   = Random(detSeed ^ 8ULL);
+    miscRng       = Random(detSeed ^ 9ULL);
+    treasureRng   = Random(detSeed ^ 10ULL);
+    aiRng         = Random(detSeed ^ 11ULL);
+    cardRandomRng = Random(detSeed ^ 12ULL);
+
+    // Regenerate the monster/elite queue tails, preserving consumed prefixes
+    // so the result stays a realizable continuation of what was actually
+    // fought. Act 4 has a hardcoded queue (THE_HEART) — skip entirely.
+    // Never call generateMonsters() here: it calls generateBoss(), and
+    // boss/secondBoss are shown on the map (observable) and must not change.
+    if (act != 4) {
+        regenerateMonsterTail();
+
+        const int eoff = eliteMonsterListOffset;
+        while (eliteMonsterList.size() > eoff) {
+            eliteMonsterList.remove_back();
+        }
+        generateEliteMonsters(10 - eoff);
+    }
+}
+
 void GameContext::transitionToAct(int targetAct) {
     act = targetAct;
 
@@ -707,7 +797,7 @@ void GameContext::transitionToAct(int targetAct) {
     curMapNodeX = -1;
     curMapNodeY = -1;
     if (targetAct == 2 || targetAct == 3) {
-        *map = Map::fromSeed(seed, ascension, targetAct, !hasKey(Key::EMERALD_KEY));
+        *map = Map::fromSeed(futureRngSeed, ascension, targetAct, !hasKey(Key::EMERALD_KEY));
     } else if (targetAct == 4) {
         *map = Map::act4Map();
     }
@@ -757,7 +847,7 @@ void GameContext::transitionToMapNode(int mapNodeX) {
     ++floorNum;
     ++curMapNodeY;
 
-    const auto r = Random(seed + floorNum);
+    const auto r = Random(futureRngSeed + floorNum);
     miscRng = r;
     shuffleRng = r;
     cardRandomRng = r;
@@ -1159,7 +1249,7 @@ void GameContext::afterBattle() {
                 if (ascension >= 20 && info.encounter == boss) {
                     // go to second boss
                     ++floorNum;
-                    const auto r = Random(seed + floorNum);
+                    const auto r = Random(futureRngSeed + floorNum);
                     miscRng = r;
                     shuffleRng = r;
                     cardRandomRng = r;

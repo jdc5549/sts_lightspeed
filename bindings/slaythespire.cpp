@@ -165,7 +165,11 @@ PYBIND11_MODULE(slaythespire, m) {
                  gc.cardRandomRng = sts::Random(seed ^ 12ULL);
              },
              pybind11::arg("seed"),
-             "reseed all future-decision RNGs; call after state injection to decouple from original run history"
+             "reseed all future-decision RNGs; call after state injection to decouple from original run history. "
+             "NOT a determinization primitive: it does not touch futureRngSeed, so BattleContext::init's "
+             "startRandom (combat draw order, shuffle, monster AI, monster HP) and every floor-transition "
+             "startRandom re-derivation still key off the true `seed` and stay clairvoyant. Use "
+             "GameContext.determinize() instead when the goal is a non-clairvoyant rollout playout."
         )
         .def("transition_to_act",
              [](GameContext &gc, int targetAct) { gc.transitionToAct(targetAct); },
@@ -395,6 +399,9 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("screen_state", &GameContext::screenState)
 
         .def_readwrite("seed", &GameContext::seed)
+        .def_property_readonly("future_rng_seed", [](const GameContext &gc) { return gc.futureRngSeed; },
+            "seed driving forward-facing (not-yet-observed) randomness; equals `seed` unless determinize() "
+            "has been called on this GameContext")
         .def_readwrite("cur_map_node_x", &GameContext::curMapNodeX)
         .def_readwrite("cur_map_node_y", &GameContext::curMapNodeY)
         .def_readwrite("cur_room", &GameContext::curRoom)
@@ -440,7 +447,17 @@ PYBIND11_MODULE(slaythespire, m) {
                 }
                 return copy;
             },
-            "return an independent value copy of this GameContext (deep copy of all fields including Map)");
+            "return an independent value copy of this GameContext (deep copy of all fields including Map)")
+        .def("determinize",
+            [](GameContext &gc, std::uint64_t detSeed) { gc.determinize(detSeed); },
+            pybind11::arg("det_seed"),
+            "re-roll this GameContext's forward-facing (not-yet-observed) randomness from det_seed: floor-"
+            "transition/combat startRandom derivations and the monster/elite queue tails (prefix-preserving). "
+            "Leaves the map, deck, relics, HP, gold, potions, boss, screen state, and remaining event/relic "
+            "pools untouched — those are observable state, not future randomness. No-op on act 4. Mutates "
+            "this GameContext in place; clone() first if the original must be preserved. Intended for "
+            "non-clairvoyant rollout playouts (see PLAN-macro-determinization.md D1); with det_seed == seed "
+            "(the default, i.e. no call), behaviour is unchanged.");
 
     pybind11::class_<RelicInstance> relic(m, "Relic");
     relic.def_readwrite("id", &RelicInstance::id)

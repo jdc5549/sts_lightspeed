@@ -157,6 +157,14 @@ namespace sts {
         // ********* hidden from player *********
         std::uint64_t seed;
 
+        // Seed used to derive all forward-facing (not-yet-observed) randomness:
+        // floor-transition RNG re-derivation, future act maps, and the monster/
+        // elite queue tails. Equal to `seed` unless determinize() has been called
+        // on this GameContext (e.g. inside a rollout playout clone). Keeping this
+        // separate from `seed` is what makes determinize() opt-in and byte-compat
+        // with pre-determinization behaviour by default.
+        std::uint64_t futureRngSeed;
+
         Random aiRng;
         Random cardRandomRng;
         Random cardRng;
@@ -261,9 +269,14 @@ namespace sts {
         void generateWeakMonsters();
         void generateStrongMonsters();
         void generateElites();
+        void generateEliteMonsters(int count);
         void generateBoss();
         void populateMonsterList(const MonsterEncounter monsters[], const float weights[], int monstersSize, int numMonsters);
         void populateFirstStrongEnemy(const MonsterEncounter monsters[], const float weights[], int monstersSize);
+
+        // determinization (rollout planning support — see PLAN-macro-determinization.md D1)
+        void determinize(std::uint64_t detSeed);
+        void regenerateMonsterTail();
 
         // room setup
         void transitionToAct(int act);

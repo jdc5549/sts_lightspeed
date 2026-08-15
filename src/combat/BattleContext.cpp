@@ -28,7 +28,7 @@ void BattleContext::init(const GameContext &gc, MonsterEncounter encounterToInit
     floorNum = gc.floorNum;
     encounter = encounterToInit;
 
-    auto startRandom = Random(gc.seed+gc.floorNum);
+    auto startRandom = Random(gc.futureRngSeed+gc.floorNum);
     aiRng = startRandom;
     monsterHpRng = startRandom;
     shuffleRng = startRandom;
