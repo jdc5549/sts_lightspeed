@@ -69,6 +69,12 @@ namespace sts {
         Outcome outcome = Outcome::UNDECIDED;
         InputState inputState = InputState::EXECUTING_ACTIONS;
         CardSelectInfo cardSelectInfo;
+        // O8 fix: cards temporarily pulled out of exhaustPile while an EXHUME
+        // CARD_SELECT screen is open, so that Exhume itself cannot be offered
+        // as (and chosen as) its own recovery target -- mirrors Java's
+        // ExhumeAction.exhumes list. Restored to exhaustPile in
+        // chooseExhumeCard(). See docs/simulator/KNOWN_SIM_BUGS.md O8.
+        fixed_list<CardInstance, 10> exhumeReservedCards;
 
         int monsterTurnIdx = 6;
 

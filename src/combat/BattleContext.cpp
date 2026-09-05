@@ -3030,6 +3030,17 @@ void BattleContext::chooseExhumeCard(int exhaustIdx) {
     cards.notifyAddCardToCombat(c);
 
     moveToHandHelper(c);
+
+    // O8 fix: restore any Exhume copies ExhumeAction() set aside before
+    // opening the CARD_SELECT screen (mirrors Java's
+    // exhaustPile.group.addAll(exhumes)). A no-op on the nonExhumeCards==1
+    // auto-resolve path, which never reserves anything.
+    if (!exhumeReservedCards.empty()) {
+        for (auto &r : exhumeReservedCards) {
+            cards.exhaustPile.push_back(r);
+        }
+        exhumeReservedCards.clear();
+    }
 }
 
 void BattleContext::chooseForethoughtCard(int handIdx) {

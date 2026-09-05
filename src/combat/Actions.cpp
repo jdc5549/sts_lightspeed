@@ -754,7 +754,7 @@ Action Actions::DualWieldAction(int copyCount) {
     }};
 }
 
-Action Actions::ExhumeAction() { // todo this is bugged because the selected card cannot be exhume
+Action Actions::ExhumeAction() {
     return {[=] (BattleContext &bc) {
         if (bc.cards.exhaustPile.empty() || bc.cards.cardsInHand == 10) {
             return;
@@ -776,6 +776,35 @@ Action Actions::ExhumeAction() { // todo this is bugged because the selected car
             bc.chooseExhumeCard(lastNonExhumeIdx);
 
         } else {
+            // O8 fix: Exhume cannot select itself. Java's ExhumeAction.update()
+            // pulls every Exhume copy out of exhaustPile.group BEFORE opening
+            // the grid select screen, and restores them once a choice is made
+            // (ExhumeAction.java, both the immediate- and deferred-selection
+            // branches). This fork previously opened CARD_SELECT over the raw
+            // exhaustPile, so an Exhume copy sitting in the pile (from an
+            // earlier cast) was offered -- and selectable -- as its own
+            // recovery target. Choosing it let the agent pull Exhume back into
+            // hand, replay it, and reopen the identical screen forever (see
+            // docs/simulator/KNOWN_SIM_BUGS.md O8). Set Exhume copies aside
+            // here; chooseExhumeCard() restores them after the pick.
+            //
+            // Collected in FORWARD pile order (i increments only when the
+            // current slot is kept; erasing at i re-examines the element that
+            // just shifted into i without incrementing) to match Java's
+            // forward `Iterator`/`remove()` walk over `exhaustPile.group` --
+            // with >=2 Exhume copies present, a naive reverse scan would
+            // restore them in the opposite of their original relative order,
+            // and exhaust-pile order is observable (later index-based
+            // CARD_SELECT screens read it).
+            bc.exhumeReservedCards.clear();
+            for (int i = 0; i < bc.cards.exhaustPile.size(); ) {
+                if (bc.cards.exhaustPile[i].id == CardId::EXHUME) {
+                    bc.exhumeReservedCards.push_back(bc.cards.exhaustPile[i]);
+                    bc.cards.exhaustPile.erase(bc.cards.exhaustPile.begin() + i);
+                } else {
+                    ++i;
+                }
+            }
             bc.cardSelectInfo.cardSelectTask = CardSelectTask::EXHUME;
             bc.inputState = InputState::CARD_SELECT;
         }

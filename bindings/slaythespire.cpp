@@ -1573,6 +1573,29 @@ PYBIND11_MODULE(slaythespire, m) {
             pybind11::arg("draw_idx"),
             "Draw the card at draw_idx in the draw pile to hand (Secret Technique/Weapon/Seek)")
 
+        // TEST ONLY: direct card injection, bypassing draw/shuffle/exhaust flow, for
+        // constructing hard-to-reach CARD_SELECT fixtures in tests (mirrors the existing
+        // GameContext.inject_relic_silent mid-state-injection pattern). Not used by any
+        // agent/runner code path.
+        .def("debug_add_hand_card",
+            [](BattleContext &bc, CardId card_id, bool upgraded) {
+                CardInstance c(card_id, upgraded);
+                c.uniqueId = static_cast<std::int16_t>(bc.cards.nextUniqueCardId++);
+                bc.cards.notifyAddCardToCombat(c);
+                bc.cards.moveToHand(c);
+            },
+            pybind11::arg("card_id"), pybind11::arg("upgraded") = false,
+            "TEST ONLY: add a card directly to hand, bypassing draw/shuffle")
+        .def("debug_add_exhaust_card",
+            [](BattleContext &bc, CardId card_id, bool upgraded) {
+                CardInstance c(card_id, upgraded);
+                c.uniqueId = static_cast<std::int16_t>(bc.cards.nextUniqueCardId++);
+                bc.cards.notifyAddCardToCombat(c);
+                bc.cards.moveToExhaustPile(c);
+            },
+            pybind11::arg("card_id"), pybind11::arg("upgraded") = false,
+            "TEST ONLY: add a card directly to the exhaust pile, bypassing normal exhaust flow")
+
         // Use a potion from a potion slot
         .def("drink_potion",
             [](BattleContext &bc, int slot_idx, int target_idx) {
