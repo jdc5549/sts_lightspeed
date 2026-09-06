@@ -200,8 +200,12 @@ namespace sts {
                e == sts::MonsterEncounter::THE_HEART;
     }
 
-
-
+    // SmokeBomb.canUse(): false if any monster is EnemyType.BOSS or has BackAttackPower.
+    // Act-4 SpireShield/SpireSpear are typed ELITE but carry BackAttackPower, so
+    // SHIELD_AND_SPEAR must be excluded explicitly on top of the boss check.
+    static constexpr bool canSmokeBombEscape(MonsterEncounter e) {
+        return !isBossEncounter(e) && e != sts::MonsterEncounter::SHIELD_AND_SPEAR;
+    }
 
 }
 

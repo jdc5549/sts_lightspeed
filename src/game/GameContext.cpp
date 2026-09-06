@@ -1246,6 +1246,12 @@ void GameContext::enterBattle(MonsterEncounter encounter) {
 }
 
 void GameContext::afterBattle() {
+    // Smoke Bomb escape: the gold/relic/potion rolls below still happen (same RNG
+    // consumption as a normal victory), but the card-reward roll is skipped and the
+    // reward screen never opens -- the player receives nothing from this combat.
+    const bool smoked = info.smoked;
+    info.smoked = false;
+
     if (hasRelic(RelicId::FACE_OF_CLERIC)) {
         playerIncreaseMaxHp(1);
     }
@@ -1253,20 +1259,33 @@ void GameContext::afterBattle() {
     switch (curRoom) {
         case Room::MONSTER: {
             regainControlAction = returnToMapAction;
-            auto reward = createCombatReward();
+            auto reward = createCombatReward(!smoked);
             if (info.stolenGold != 0) { // todo stolen gold actually comes first in the list
                 reward.addGold(info.stolenGold);
             }
-            openCombatRewardScreen(reward);
+            if (smoked) {
+                regainControl();
+            } else {
+                openCombatRewardScreen(reward);
+            }
             break;
         }
 
-        case Room::ELITE:
+        case Room::ELITE: {
             regainControlAction = returnToMapAction;
-            openCombatRewardScreen(createEliteCombatReward());
+            auto reward = createEliteCombatReward(!smoked);
+            if (smoked) {
+                regainControl();
+            } else {
+                openCombatRewardScreen(reward);
+            }
             break;
+        }
 
         case Room::BOSS:
+#ifdef sts_asserts
+            assert(!smoked);
+#endif
             if (act == 1 || act == 2) {
                 regainControlAction = [=](GameContext &gc) {
                     gc.enterBossTreasureRoom();
@@ -1307,9 +1326,13 @@ void GameContext::afterBattle() {
                 reward.addGold(info.gold);
                 reward.addRelic(info.bossRelics[0]);
                 addPotionRewards(reward);
-                reward.addCardReward(createCardReward(Room::EVENT));
-                openCombatRewardScreen(reward);
                 regainControlAction = returnToMapAction;
+                if (smoked) {
+                    regainControl();
+                } else {
+                    reward.addCardReward(createCardReward(Room::EVENT));
+                    openCombatRewardScreen(reward);
+                }
             } else {
                 regainControl();
             }
@@ -2054,7 +2077,7 @@ void GameContext::openTreasureRoomChest() {
     openCombatRewardScreen(reward);
 }
 
-Rewards GameContext::createCombatReward() {
+Rewards GameContext::createCombatReward(bool includeCardReward) {
     Rewards reward;
     int goldAmt = treasureRng.random(10, 20);
     if (hasRelic(RelicId::GOLDEN_IDOL)) {
@@ -2062,14 +2085,16 @@ Rewards GameContext::createCombatReward() {
     }
     reward.addGold(goldAmt);
     addPotionRewards(reward);
-    reward.addCardReward(createCardReward(Room::MONSTER)); // TODO Prayer wheel
-    if (hasRelic(RelicId::PRAYER_WHEEL)) {
-        reward.addCardReward(createCardReward(Room::MONSTER));
+    if (includeCardReward) {
+        reward.addCardReward(createCardReward(Room::MONSTER)); // TODO Prayer wheel
+        if (hasRelic(RelicId::PRAYER_WHEEL)) {
+            reward.addCardReward(createCardReward(Room::MONSTER));
+        }
     }
     return reward;
 }
 
-Rewards GameContext::createEliteCombatReward() {
+Rewards GameContext::createEliteCombatReward(bool includeCardReward) {
     Rewards reward;
 
     int goldAmt = treasureRng.random(25, 35);
@@ -2084,7 +2109,9 @@ Rewards GameContext::createEliteCombatReward() {
     }
     reward.emeraldKey = map->burningEliteX == curMapNodeX && map->burningEliteY == curMapNodeY;
     addPotionRewards(reward);
-    reward.addCardReward(createCardReward(Room::ELITE));
+    if (includeCardReward) {
+        reward.addCardReward(createCardReward(Room::ELITE));
+    }
     return reward;
 }
 

@@ -79,6 +79,10 @@ namespace sts {
         int monsterTurnIdx = 6;
 
         bool isBattleOver = false;
+        // SmokeBomb.use(): room.smoked = true. Escaping via smoke bomb still runs
+        // AbstractRoom.endBattle() (same as a victory -- onVictory relics fire), but
+        // GameContext::afterBattle suppresses the card-reward roll and grants nothing.
+        bool smoked = false;
         bool endTurnQueued = false;
         bool turnHasEnded = false;
         bool skipMonsterTurn = false;

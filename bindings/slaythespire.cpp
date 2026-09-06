@@ -470,7 +470,30 @@ PYBIND11_MODULE(slaythespire, m) {
             "pools untouched — those are observable state, not future randomness. No-op on act 4. Mutates "
             "this GameContext in place; clone() first if the original must be preserved. Intended for "
             "non-clairvoyant rollout playouts (see PLAN-macro-determinization.md D1); with det_seed == seed "
-            "(the default, i.e. no call), behaviour is unchanged.");
+            "(the default, i.e. no call), behaviour is unchanged.")
+
+        // RNG counter read-only properties (post-combat reward RNG streams; used to verify
+        // e.g. that Smoke Bomb suppresses the card-reward draw while gold/relic/potion still
+        // consume RNG identically to a normal victory -- see docs/simulator/KNOWN_SIM_BUGS.md).
+        .def_property_readonly("card_rng_counter",
+            [](const GameContext &gc) { return gc.cardRng.counter; },
+            "cardRng usage counter -- THIS is the card-REWARD stream (rollCardRarity + "
+            "getRandomClassCardOfRarity). Not synced from the BattleContext on exit, so a "
+            "before/after read on the GameContext isolates the reward roll exactly.")
+        .def_property_readonly("card_random_rng_counter",
+            [](const GameContext &gc) { return gc.cardRandomRng.counter; },
+            "cardRandomRng usage counter -- IN-COMBAT card randomness (shuffles, random "
+            "discards), NOT the card reward. BattleContext::exitBattle overwrites this from "
+            "the combat's own copy, so it says nothing about what afterBattle did.")
+        .def_property_readonly("treasure_rng_counter",
+            [](const GameContext &gc) { return gc.treasureRng.counter; },
+            "treasureRng usage counter (drives the gold roll)")
+        .def_property_readonly("relic_rng_counter",
+            [](const GameContext &gc) { return gc.relicRng.counter; },
+            "relicRng usage counter (drives elite/boss relic rolls)")
+        .def_property_readonly("potion_rng_counter",
+            [](const GameContext &gc) { return gc.potionRng.counter; },
+            "potionRng usage counter (drives the potion-reward roll)");
 
     pybind11::class_<RelicInstance> relic(m, "Relic");
     relic.def_readwrite("id", &RelicInstance::id)
@@ -1602,6 +1625,7 @@ PYBIND11_MODULE(slaythespire, m) {
                 if (slot_idx < 0 || slot_idx >= bc.potionCapacity) return;
                 if (bc.potions[slot_idx] == Potion::EMPTY_POTION_SLOT) return;
                 if (bc.potions[slot_idx] == Potion::FAIRY_POTION) return;  // auto-triggers on death; cannot be manually used
+                if (bc.potions[slot_idx] == Potion::SMOKE_BOMB && !canSmokeBombEscape(bc.encounter)) return;  // no bosses, no Act-4 Shield & Spear
                 bc.drinkPotion(slot_idx, target_idx);
                 bc.inputState = InputState::EXECUTING_ACTIONS;
                 bc.executeActions();

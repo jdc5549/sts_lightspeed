@@ -132,6 +132,9 @@ namespace sts {
 
         // from combats
         int stolenGold = 0;
+        // set by BattleContext::exitBattle when the battle ended via Smoke Bomb;
+        // consumed (read + cleared) at the top of GameContext::afterBattle.
+        bool smoked = false;
 
         // Shop Room
         Shop shop;
@@ -318,8 +321,11 @@ namespace sts {
         CardReward createCardReward(Room room);
         CardReward createColorlessCardReward();
 
-        Rewards createCombatReward();
-        Rewards createEliteCombatReward();
+        // includeCardReward=false suppresses only the card-reward roll (used when the
+        // battle ended via Smoke Bomb, which forfeits the reward screen entirely --
+        // gold/relic/potion/key rolls still happen and run in the same order).
+        Rewards createCombatReward(bool includeCardReward = true);
+        Rewards createEliteCombatReward(bool includeCardReward = true);
         Rewards createBossCombatReward();
 
         Event getShrine(Random &eventRngCopy);

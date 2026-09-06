@@ -45,6 +45,7 @@ void BattleContext::init(const GameContext &gc, MonsterEncounter encounterToInit
     skipMonsterTurn = false;
     turnHasEnded = false;
     isBattleOver = false;
+    smoked = false;
 
     actionQueue.clear();
     cardQueue.clear();
@@ -510,6 +511,8 @@ void BattleContext::exitBattle(GameContext &g) const {
             }
         }
     }
+
+    g.info.smoked = smoked;
 
     if (outcome == Outcome::PLAYER_LOSS) {
         g.outcome = GameOutcome::PLAYER_LOSS;
@@ -2393,7 +2396,15 @@ void BattleContext::drinkPotion(int idx, int target) {
             break;
 
         case Potion::SMOKE_BOMB:
-            // todo
+            // Java SmokeBomb.use(): room.smoked = true, the player escapes, and
+            // AbstractRoom.endBattle() runs -- the same path as a victory, so onVictory
+            // relics (Burning Blood / Black Blood / Meat on the Bone) still fire.
+            // Reward suppression lives in GameContext::afterBattle: the gold/relic/potion
+            // rolls still happen, the card-reward roll does not, and nothing is granted.
+            // Legality (no bosses, no Act-4 Shield & Spear) is enforced by the callers.
+            smoked = true;
+            outcome = Outcome::PLAYER_VICTORY;
+            checkCombat();   // Java: actionManager.clear() inside endBattle()
             break;
 
         case Potion::SNECKO_OIL:

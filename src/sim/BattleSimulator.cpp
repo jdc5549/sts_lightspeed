@@ -171,6 +171,14 @@ void BattleSimulator::takePotionAction(const std::string &action) {
         // drink potion command
 
         const auto p = bc->potions[potionIdx];
+        // Same legality rule the search enumerator and the pybind binding apply:
+        // SmokeBomb.canUse() forbids bosses and Act-4 Shield & Spear. Without this
+        // the console could set BattleContext::smoked in a BOSS room and trip
+        // afterBattle's assert(!smoked) -- and asserts are live (sts_common.h
+        // defines sts_asserts unconditionally, and no NDEBUG is set).
+        if (p == Potion::SMOKE_BOMB && !canSmokeBombEscape(bc->encounter)) {
+            return;
+        }
         if(potionRequiresTarget(p)) {
             int target = 0;
             ss >> target;

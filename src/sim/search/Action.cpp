@@ -87,6 +87,10 @@ bool isValidPotionAction(const BattleContext &bc, const search::Action &a) {
             return false;
         }
 
+        if (p == sts::Potion::SMOKE_BOMB && !canSmokeBombEscape(bc.encounter)) {
+            return false;
+        }
+
         if (!potionRequiresTarget(p)) {
             return true;
         }

@@ -279,6 +279,11 @@ void search::BattleScumSearcher2::enumeratePotionActions(search::BattleScumSearc
             continue;
         }
 
+        if (p == Potion::SMOKE_BOMB && !canSmokeBombEscape(bc.encounter)) {
+            node.edges.push_back({Action(ActionType::POTION, pIdx, -1)});
+            continue;
+        }
+
         if (!potionRequiresTarget(p)) {
             node.edges.push_back({Action(ActionType::POTION, pIdx)});
             continue;
