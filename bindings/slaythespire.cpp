@@ -449,6 +449,33 @@ PYBIND11_MODULE(slaythespire, m) {
                 return result;
             },
             "return list of deck indices that are bottled (excluded from REMOVE/TOKE selection)")
+        .def("bottle_card",
+            [](GameContext &gc, int idx) {
+                if (idx < 0 || idx >= gc.deck.size()) {
+                    throw std::out_of_range("bottle_card: deck index out of range");
+                }
+                const CardType type = gc.deck.cards[idx].getType();
+                if (type != CardType::ATTACK && type != CardType::SKILL && type != CardType::POWER) {
+                    throw std::invalid_argument("bottle_card: only ATTACK/SKILL/POWER cards can be bottled");
+                }
+                if (gc.deck.bottleIdxs[static_cast<int>(type)] != -1) {
+                    throw std::logic_error("bottle_card: a card of this type is already bottled");
+                }
+                gc.deck.bottleCard(idx, type);
+            },
+            "bottle deck card idx in the slot for its card type (Bottled Flame/Lightning/Tornado state only; "
+            "does not add the relic). Raises if that slot is already filled. act2-wall-probe loadout restore.")
+        .def("clear_bottles",
+            [](GameContext &gc) {
+                for (int t = 0; t < 3; ++t) {
+                    if (gc.deck.bottleIdxs[t] != -1) {
+                        gc.deck.removeBottle(static_cast<CardType>(t));
+                    }
+                }
+            },
+            "empty every bottle slot (Deck state only; relics untouched). Call BEFORE clearing/rebuilding "
+            "a deck: with all three slots filled, Deck::remove does not shift bottle indices "
+            "(KNOWN_SIM_BUGS O8), so a later rebuild would inherit stale bottled indices.")
         .def("clone",
             [](const GameContext &gc) {
                 GameContext copy = gc;
