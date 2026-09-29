@@ -6,6 +6,8 @@
 #include "sim/search/Featurize.h"
 #include "sim/search/StateKey.h"
 #include "sim/search/ApplyAction.h"
+#include "sim/search/PuctSearch.h"
+#include "sim/search/StateHash.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -13,6 +15,7 @@
 #include <pybind11/functional.h>
 
 #include <sstream>
+#include <cstring>
 #include <algorithm>
 
 #include "sim/ConsoleSimulator.h"
@@ -29,6 +32,44 @@
 
 
 using namespace sts;
+
+namespace {
+// {section: {field: ndarray}} + keys, shared by BattleContext.featurize_sections and PuctSearch's leaf callback.
+pybind11::dict featuresToPy(const sts::search::Features &f, const sts::search::FeaturizerConfig &cfg) {
+    namespace py = pybind11;
+    auto mk = [](const auto &vec, std::vector<py::ssize_t> shape) {
+        using E = typename std::decay_t<decltype(vec)>::value_type;
+        py::array_t<E> a(shape);
+        if (!vec.empty()) std::memcpy(a.mutable_data(), vec.data(), vec.size() * sizeof(E));
+        return a;
+    };
+    const py::ssize_t H = cfg.handSlots, P = cfg.previewSlots, C = cfg.cardSelectSlots;
+    py::dict out, d;
+    d = py::dict(); d["scalars"] = mk(f.scalars, {(py::ssize_t) f.scalars.size()}); out["scalars"] = d;
+    d = py::dict(); d["idx"] = mk(f.handIdx, {H}); d["valid"] = mk(f.handValid, {H, 1});
+    d["scalars"] = mk(f.handScalars, {H, 3}); out["hand"] = d;
+    d = py::dict(); d["idx"] = mk(f.drawIdx, {(py::ssize_t) f.drawIdx.size()});
+    d["has_frozen_eye"] = f.hasFrozenEye;
+    if (f.hasFrozenEye) { d["preview_idx"] = mk(f.previewIdx, {P}); d["preview_valid"] = mk(f.previewValid, {P, 1}); }
+    else { d["preview_idx"] = py::none(); d["preview_valid"] = py::none(); }
+    out["draw"] = d;
+    d = py::dict(); d["idx"] = mk(f.discardIdx, {(py::ssize_t) f.discardIdx.size()}); out["discard"] = d;
+    d = py::dict(); d["idx"] = mk(f.exhaustIdx, {(py::ssize_t) f.exhaustIdx.size()}); out["exhaust"] = d;
+    d = py::dict(); d["idx"] = mk(f.selectIdx, {C}); d["valid"] = mk(f.selectValid, {C, 1}); out["card_select"] = d;
+    d = py::dict(); d["idx"] = mk(f.stasisIdx, {2}); d["valid"] = mk(f.stasisValid, {2, 1}); out["stasis"] = d;
+    d = py::dict(); d["curr"] = mk(f.monCurr, {5}); d["h0"] = mk(f.monH0, {5}); d["h1"] = mk(f.monH1, {5});
+    d["mid"] = mk(f.monMid, {5}); d["turn_col"] = mk(f.monTurnCol, {5, 1});
+    d["statuses"] = mk(f.monStatuses, {5, 42}); d["scalars"] = mk(f.monScalars, {5, 8}); out["monster"] = d;
+    using S = sts::search::FeatSection;
+    py::dict keys;
+    const std::pair<const char *, S> secs[] = {{"scalars", S::Scalars}, {"hand", S::Hand}, {"draw", S::Draw},
+        {"discard", S::Discard}, {"exhaust", S::Exhaust}, {"card_select", S::CardSelect},
+        {"stasis", S::Stasis}, {"monster", S::Monster}};
+    for (const auto &sc : secs) keys[sc.first] = py::bytes(sts::search::sectionKey(f, sc.second));
+    out["keys"] = keys;
+    return out;
+}
+}  // namespace
 
 PYBIND11_MODULE(slaythespire, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
@@ -1498,6 +1539,114 @@ PYBIND11_MODULE(slaythespire, m) {
         return d;
     }, "Field-name lists the C++ state key serialises (generated from the CombatState dataclasses)");
 
+    // C.4e: the C++ PUCT tree (exact stage; see include/sim/search/PuctSearch.h)
+    pybind11::class_<sts::search::PuctSearch>(m, "PuctSearch")
+        .def(pybind11::init([](int num_card_types, int hand_slots, int preview_slots, int card_select_slots,
+                               int num_monster_slots, int mmid_cap, int era) {
+            sts::search::FeaturizerConfig cfg;
+            cfg.numCardTypes = num_card_types; cfg.handSlots = hand_slots; cfg.previewSlots = preview_slots;
+            cfg.cardSelectSlots = card_select_slots; cfg.monsterSlots = num_monster_slots;
+            cfg.mmidCap = mmid_cap; cfg.era = era;
+            return std::make_unique<sts::search::PuctSearch>(cfg);
+        }), pybind11::arg("num_card_types"), pybind11::arg("hand_slots"), pybind11::arg("preview_slots"),
+            pybind11::arg("card_select_slots"), pybind11::arg("num_monster_slots"), pybind11::arg("mmid_cap"),
+            pybind11::arg("era") = 1)
+        .def("clear", &sts::search::PuctSearch::clear, "Clear the per-combat nn and extract caches")
+        .def("set_mutation", &sts::search::PuctSearch::setMutation, "TEST ONLY: 0 exact; 1..4 = C.4e mutations")
+        .def("reset_counters", &sts::search::PuctSearch::resetCounters)
+        .def("last_root_w", [](const sts::search::PuctSearch &ps) {
+            pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            std::memcpy(out.mutable_data(), ps.lastRootW().data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            return out;
+        }, "Root W (float32[76]) of the last run_tree (diagnostic)")
+        .def("counters", [](const sts::search::PuctSearch &ps) {
+            const auto &c = ps.counters();
+            pybind11::dict d;
+            d["nn_hits"] = c.nnHits; d["nn_misses"] = c.nnMisses; d["extract_hits"] = c.extractHits;
+            d["extract_misses"] = c.extractMisses; d["leaf_evals"] = c.leafEvals; d["sims"] = c.sims;
+            d["trees"] = c.trees; d["nodes"] = c.nodes; d["actions_applied"] = c.actionsApplied;
+            d["nn_cache_size"] = ps.nnCacheSize(); d["extract_cache_size"] = ps.extractCacheSize();
+            return d;
+        })
+        .def("run_tree",
+            [](sts::search::PuctSearch &ps, const BattleContext &bc, std::uint64_t seed, bool reshuffle, int n_sims,
+               double c_puct, pybind11::object root_noise, double noise_eps, pybind11::function leaf_eval,
+               const std::string &terminal_mode) {
+                namespace py = pybind11;
+                sts::search::TerminalMode tm;
+                if (terminal_mode == "outcome") tm = sts::search::TerminalMode::Outcome;
+                else if (terminal_mode == "hp_fraction") tm = sts::search::TerminalMode::HpFraction;
+                else throw std::invalid_argument("run_tree: unknown terminal_mode '" + terminal_mode + "'");
+                std::vector<double> noise;
+                const std::vector<double> *noisePtr = nullptr;
+                if (!root_noise.is_none()) {
+                    if (!py::isinstance<py::array_t<double, py::array::c_style>>(root_noise))
+                        throw std::invalid_argument("root_noise must be a C-contiguous float64 ndarray or None");
+                    auto arr = py::cast<py::array_t<double, py::array::c_style>>(root_noise);
+                    if (arr.ndim() != 1) throw std::invalid_argument("root_noise must be 1-D");
+                    noise.assign(arr.data(), arr.data() + arr.size());
+                    noisePtr = &noise;
+                }
+                const sts::search::FeaturizerConfig cfg = ps.config();
+                sts::search::LeafEval cb = [&](const sts::search::Features &f, const sts::search::PyMask76 &mask) {
+                    py::array_t<bool> m_arr(std::vector<py::ssize_t>{sts::search::PY_ACTION_SPACE});
+                    auto r = m_arr.mutable_unchecked<1>();
+                    for (int i = 0; i < sts::search::PY_ACTION_SPACE; ++i) r(i) = mask[i];
+                    py::object out = leaf_eval(featuresToPy(f, cfg), m_arr);
+                    py::tuple t = py::cast<py::tuple>(out);
+                    if (t.size() != 2) throw std::invalid_argument("leaf_eval must return (P, value)");
+                    if (!py::isinstance<py::array_t<float, py::array::c_style>>(t[0]))
+                        throw std::invalid_argument("leaf_eval P must be a C-contiguous float32 ndarray");
+                    auto pa = py::cast<py::array_t<float, py::array::c_style>>(t[0]);
+                    if (pa.ndim() != 1 || pa.size() != sts::search::PY_ACTION_SPACE)
+                        throw std::invalid_argument("leaf_eval P must have shape (76,)");
+                    sts::search::LeafResult res;
+                    std::memcpy(res.P.data(), pa.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+                    res.value = py::cast<double>(t[1]);
+                    return res;
+                };
+                sts::search::TreeResult tr = ps.runTree(bc, seed, reshuffle, n_sims, c_puct, noisePtr, noise_eps, cb, tm);
+                py::array_t<std::int32_t> rawN(std::vector<py::ssize_t>{sts::search::PY_ACTION_SPACE});
+                std::memcpy(rawN.mutable_data(), tr.rawN.data(), sizeof(std::int32_t) * sts::search::PY_ACTION_SPACE);
+                return py::make_tuple(rawN, tr.rootValue);
+            },
+            pybind11::arg("bc"), pybind11::arg("seed"), pybind11::arg("reshuffle"), pybind11::arg("n_sims"),
+            pybind11::arg("c_puct"), pybind11::arg("root_noise"), pybind11::arg("noise_eps"),
+            pybind11::arg("leaf_eval"), pybind11::arg("terminal_mode"),
+            "One determinization (clone_with_fresh_rng + n_sims sims) -> (raw_N int32[76], root_value)");
+
+    // pure pieces for the bitwise unit tests
+    m.def("puct_test_w_add", [](pybind11::array_t<float, pybind11::array::c_style> w,
+                                pybind11::array_t<double, pybind11::array::c_style> v) {
+        if (w.size() != v.size()) throw std::invalid_argument("size mismatch");
+        pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{static_cast<pybind11::ssize_t>(w.size())});
+        for (pybind11::ssize_t i = 0; i < w.size(); ++i) out.mutable_data()[i] = sts::search::wAdd(w.data()[i], v.data()[i]);
+        return out;
+    });
+    m.def("puct_test_noise_mix", [](pybind11::array_t<float, pybind11::array::c_style> p, double eps,
+                                    pybind11::array_t<double, pybind11::array::c_style> nz) {
+        if (p.size() != nz.size()) throw std::invalid_argument("size mismatch");
+        pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{static_cast<pybind11::ssize_t>(p.size())});
+        for (pybind11::ssize_t i = 0; i < p.size(); ++i) out.mutable_data()[i] = sts::search::noiseMix(p.data()[i], eps, nz.data()[i]);
+        return out;
+    });
+    m.def("puct_test_select", [](pybind11::array_t<std::int32_t, pybind11::array::c_style> N,
+                                 pybind11::array_t<float, pybind11::array::c_style> W,
+                                 pybind11::array_t<float, pybind11::array::c_style> P,
+                                 pybind11::array_t<bool, pybind11::array::c_style> mask, double c, int mutation) {
+        if (N.size() != 76 || W.size() != 76 || P.size() != 76 || mask.size() != 76) throw std::invalid_argument("need 76");
+        return sts::search::puctSelectRaw(N.data(), W.data(), P.data(), mask.data(), c, mutation);
+    }, pybind11::arg("N"), pybind11::arg("W"), pybind11::arg("P"), pybind11::arg("mask"), pybind11::arg("c"),
+       pybind11::arg("mutation") = 0);
+    m.def("puct_test_w_add_mut", [](pybind11::array_t<float, pybind11::array::c_style> w,
+                                    pybind11::array_t<double, pybind11::array::c_style> v) {
+        // mutation 4 arithmetic (double accumulate), for the unit-test mutation check
+        pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{static_cast<pybind11::ssize_t>(w.size())});
+        for (pybind11::ssize_t i = 0; i < w.size(); ++i)
+            out.mutable_data()[i] = static_cast<float>(static_cast<double>(w.data()[i]) + v.data()[i]);
+        return out;
+    });
+
     m.def("featurizer_tables", []() {
         pybind11::dict d;
         for (const auto &kv : sts::search::vocabTables()) d[kv.first.c_str()] = kv.second;
@@ -1775,38 +1924,7 @@ PYBIND11_MODULE(slaythespire, m) {
                 cfg.numCardTypes = num_card_types; cfg.handSlots = hand_slots; cfg.previewSlots = preview_slots;
                 cfg.cardSelectSlots = card_select_slots; cfg.monsterSlots = num_monster_slots;
                 cfg.mmidCap = mmid_cap; cfg.era = era;
-                const sts::search::Features f = sts::search::featurize(bc, cfg);
-                auto mk = [](const auto &vec, std::vector<py::ssize_t> shape) {
-                    using E = typename std::decay_t<decltype(vec)>::value_type;
-                    py::array_t<E> a(shape);
-                    if (!vec.empty()) std::memcpy(a.mutable_data(), vec.data(), vec.size() * sizeof(E));
-                    return a;
-                };
-                const py::ssize_t H = cfg.handSlots, P = cfg.previewSlots, C = cfg.cardSelectSlots;
-                py::dict out, d;
-                d = py::dict(); d["scalars"] = mk(f.scalars, {(py::ssize_t) f.scalars.size()}); out["scalars"] = d;
-                d = py::dict(); d["idx"] = mk(f.handIdx, {H}); d["valid"] = mk(f.handValid, {H, 1});
-                d["scalars"] = mk(f.handScalars, {H, 3}); out["hand"] = d;
-                d = py::dict(); d["idx"] = mk(f.drawIdx, {(py::ssize_t) f.drawIdx.size()});
-                d["has_frozen_eye"] = f.hasFrozenEye;
-                if (f.hasFrozenEye) { d["preview_idx"] = mk(f.previewIdx, {P}); d["preview_valid"] = mk(f.previewValid, {P, 1}); }
-                else { d["preview_idx"] = py::none(); d["preview_valid"] = py::none(); }
-                out["draw"] = d;
-                d = py::dict(); d["idx"] = mk(f.discardIdx, {(py::ssize_t) f.discardIdx.size()}); out["discard"] = d;
-                d = py::dict(); d["idx"] = mk(f.exhaustIdx, {(py::ssize_t) f.exhaustIdx.size()}); out["exhaust"] = d;
-                d = py::dict(); d["idx"] = mk(f.selectIdx, {C}); d["valid"] = mk(f.selectValid, {C, 1}); out["card_select"] = d;
-                d = py::dict(); d["idx"] = mk(f.stasisIdx, {2}); d["valid"] = mk(f.stasisValid, {2, 1}); out["stasis"] = d;
-                d = py::dict(); d["curr"] = mk(f.monCurr, {5}); d["h0"] = mk(f.monH0, {5}); d["h1"] = mk(f.monH1, {5});
-                d["mid"] = mk(f.monMid, {5}); d["turn_col"] = mk(f.monTurnCol, {5, 1});
-                d["statuses"] = mk(f.monStatuses, {5, 42}); d["scalars"] = mk(f.monScalars, {5, 8}); out["monster"] = d;
-                using S = sts::search::FeatSection;
-                py::dict keys;
-                const std::pair<const char *, S> secs[] = {{"scalars", S::Scalars}, {"hand", S::Hand}, {"draw", S::Draw},
-                    {"discard", S::Discard}, {"exhaust", S::Exhaust}, {"card_select", S::CardSelect},
-                    {"stasis", S::Stasis}, {"monster", S::Monster}};
-                for (const auto &sc : secs) keys[sc.first] = py::bytes(sts::search::sectionKey(f, sc.second));
-                out["keys"] = keys;
-                return out;
+                return featuresToPy(sts::search::featurize(bc, cfg), cfg);
             },
             pybind11::arg("num_card_types") = 364, pybind11::arg("hand_slots") = 10,
             pybind11::arg("preview_slots") = 5, pybind11::arg("card_select_slots") = 3,
@@ -2087,167 +2205,13 @@ PYBIND11_MODULE(slaythespire, m) {
         // excluding RNG streams and action queues.  Used to deduplicate
         // extract_combat_state calls across K-determinization MCTS trees.
         .def("state_hash",
-            [](const BattleContext &bc) -> uint64_t {
-                uint64_t h = 14695981039346656037ULL;
-                auto mix = [&](uint64_t v) {
-                    h ^= v;
-                    h *= 1099511628211ULL;
-                };
-
-                const Player &p = bc.player;
-
-                // --- Player core ---
-                mix(static_cast<uint64_t>(p.curHp));
-                mix(static_cast<uint64_t>(p.maxHp));
-                mix(static_cast<uint64_t>(p.block));
-                mix(static_cast<uint64_t>(p.energy));
-                mix(static_cast<uint64_t>(p.energyPerTurn));
-                mix(static_cast<uint64_t>(p.cardDrawPerTurn));
-                mix(static_cast<uint64_t>(p.gold));
-                mix(static_cast<uint64_t>(p.cc));
-                mix(static_cast<uint64_t>(p.stance));
-                mix(static_cast<uint64_t>(p.orbSlots));
-                mix(static_cast<uint64_t>(p.lastTargetedMonster));
-                mix(static_cast<uint64_t>(p.artifact));
-                mix(static_cast<uint64_t>(p.dexterity));
-                mix(static_cast<uint64_t>(p.focus));
-                mix(static_cast<uint64_t>(p.strength));
-
-                // --- Player status bits ---
-                mix(p.statusBits0);
-                mix(static_cast<uint64_t>(p.statusBits1));
-                for (const auto &kv : p.statusMap) {
-                    mix(static_cast<uint64_t>(kv.first));
-                    mix(static_cast<uint64_t>(static_cast<uint16_t>(kv.second)));
-                }
-
-                // --- Relic counters ---
-                mix(static_cast<uint64_t>(p.happyFlowerCounter));
-                mix(static_cast<uint64_t>(p.incenseBurnerCounter));
-                mix(static_cast<uint64_t>(p.inkBottleCounter));
-                mix(static_cast<uint64_t>(p.inserterCounter));
-                mix(static_cast<uint64_t>(p.nunchakuCounter));
-                mix(static_cast<uint64_t>(p.penNibCounter));
-                mix(static_cast<uint64_t>(p.sundialCounter));
-                mix(p.haveUsedNecronomiconThisTurn ? 1ULL : 0ULL);
-
-                // --- Internal counters ---
-                mix(static_cast<uint64_t>(p.combustHpLoss));
-                mix(static_cast<uint64_t>(p.devaFormEnergyPerTurn));
-                mix(static_cast<uint64_t>(p.echoFormCardsDoubled));
-                mix(static_cast<uint64_t>(p.panacheCounter));
-                mix(static_cast<uint64_t>(p.bomb1));
-                mix(static_cast<uint64_t>(p.bomb2));
-                mix(static_cast<uint64_t>(p.bomb3));
-
-                // --- Turn tracking ---
-                mix(static_cast<uint64_t>(p.cardsPlayedThisTurn));
-                mix(static_cast<uint64_t>(p.attacksPlayedThisTurn));
-                mix(static_cast<uint64_t>(p.skillsPlayedThisTurn));
-                mix(static_cast<uint64_t>(p.cardsDiscardedThisTurn));
-                mix(p.orangePelletsCardTypesPlayed.to_ulong());
-
-                // --- Combat metadata ---
-                mix(static_cast<uint64_t>(bc.turn));
-                mix(static_cast<uint64_t>(bc.ascension));
-                mix(static_cast<uint64_t>(bc.floorNum));
-                mix(static_cast<uint64_t>(bc.encounter));
-                mix(static_cast<uint64_t>(bc.inputState));
-                mix(bc.miscBits.to_ulong());
-
-                // --- Potions ---
-                mix(static_cast<uint64_t>(bc.potionCount));
-                mix(static_cast<uint64_t>(bc.potionCapacity));
-                for (int i = 0; i < bc.potionCapacity && i < 5; ++i) {
-                    mix(static_cast<uint64_t>(bc.potions[i]));
-                }
-
-                // --- Card select info ---
-                {
-                    const auto &csi = bc.cardSelectInfo;
-                    mix(static_cast<uint64_t>(csi.cardSelectTask));
-                    mix(static_cast<uint64_t>(csi.pickCount));
-                    mix(csi.canPickZero ? 1ULL : 0ULL);
-                    mix(csi.canPickAnyNumber ? 1ULL : 0ULL);
-                    for (int i = 0; i < 3; ++i) {
-                        mix(static_cast<uint64_t>(csi.cards[i]));
-                    }
-                }
-
-                // --- Card piles ---
-                auto hashCard = [&mix](const CardInstance &c) {
-                    mix(static_cast<uint64_t>(c.id));
-                    mix(c.upgraded ? 1ULL : 0ULL);
-                    mix(static_cast<uint64_t>(c.cost));
-                    mix(static_cast<uint64_t>(c.costForTurn));
-                    mix(static_cast<uint64_t>(static_cast<uint16_t>(c.specialData)));
-                };
-                mix(static_cast<uint64_t>(bc.cards.cardsInHand));
-                for (int i = 0; i < bc.cards.cardsInHand; ++i) {
-                    hashCard(bc.cards.hand[i]);
-                }
-                mix(bc.cards.drawPile.size());
-                for (const auto &c : bc.cards.drawPile)    { hashCard(c); }
-                mix(bc.cards.discardPile.size());
-                for (const auto &c : bc.cards.discardPile) { hashCard(c); }
-                mix(bc.cards.exhaustPile.size());
-                for (const auto &c : bc.cards.exhaustPile) { hashCard(c); }
-                mix(static_cast<uint64_t>(bc.cards.stasisCards[0].id));
-                mix(static_cast<uint64_t>(bc.cards.stasisCards[1].id));
-
-                // --- Monsters ---
-                mix(static_cast<uint64_t>(bc.monsters.monsterCount));
-                for (int i = 0; i < bc.monsters.monsterCount && i < 5; ++i) {
-                    const Monster &m = bc.monsters.arr[i];
-                    mix(static_cast<uint64_t>(m.id));
-                    mix(static_cast<uint64_t>(m.curHp));
-                    mix(static_cast<uint64_t>(m.maxHp));
-                    mix(static_cast<uint64_t>(m.block));
-                    mix(static_cast<uint64_t>(m.moveHistory[0]));
-                    mix(static_cast<uint64_t>(m.moveHistory[1]));
-                    mix(static_cast<uint64_t>(m.strength));
-                    mix(static_cast<uint64_t>(m.vulnerable));
-                    mix(static_cast<uint64_t>(m.weak));
-                    mix(static_cast<uint64_t>(m.artifact));
-                    mix(static_cast<uint64_t>(m.poison));
-                    mix(static_cast<uint64_t>(m.metallicize));
-                    mix(static_cast<uint64_t>(m.platedArmor));
-                    mix(static_cast<uint64_t>(m.regen));
-                    mix(static_cast<uint64_t>(m.blockReturn));
-                    mix(static_cast<uint64_t>(m.choked));
-                    mix(static_cast<uint64_t>(m.corpseExplosion));
-                    mix(static_cast<uint64_t>(m.lockOn));
-                    mix(static_cast<uint64_t>(m.mark));
-                    mix(static_cast<uint64_t>(m.shackled));
-                    mix(static_cast<uint64_t>(m.uniquePower0));
-                    mix(static_cast<uint64_t>(m.uniquePower1));
-                    mix(m.statusBits);
-                    mix(m.halfDead ? 1ULL : 0ULL);
-                    mix(m.isEscapingB ? 1ULL : 0ULL);
-                    mix(m.escapeNext ? 1ULL : 0ULL);
-                    mix(static_cast<uint64_t>(m.miscInfo));
-                }
-
-                return h;
-            },
+            [](const BattleContext &bc) -> uint64_t { return sts::search::pyStateHash(bc); },
             "64-bit FNV-1a hash of observable combat state (player+cards+monsters, excludes RNG streams)")
 
         // Clone with fresh RNG streams (and optional draw-pile reshuffle)
         .def("clone_with_fresh_rng",
             [](const BattleContext &bc, std::uint64_t seed, bool reshuffle_draw_pile) -> BattleContext {
-                BattleContext copy = bc;
-                copy.aiRng         = sts::Random(seed + 0);
-                copy.cardRandomRng = sts::Random(seed + 1);
-                copy.miscRng       = sts::Random(seed + 2);
-                copy.monsterHpRng  = sts::Random(seed + 3);
-                copy.potionRng     = sts::Random(seed + 4);
-                copy.shuffleRng    = sts::Random(seed + 5);
-                if (reshuffle_draw_pile) {
-                    auto &dp = copy.cards.drawPile;
-                    java::Collections::shuffle(dp.begin(), dp.end(),
-                        java::Random(copy.shuffleRng.randomLong()));
-                }
-                return copy;
+                return sts::search::cloneWithFreshRng(bc, seed, reshuffle_draw_pile);
             },
             pybind11::arg("seed"),
             pybind11::arg("reshuffle_draw_pile") = false,
