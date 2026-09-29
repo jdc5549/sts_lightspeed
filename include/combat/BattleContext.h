@@ -103,6 +103,12 @@ namespace sts {
 
         std::bitset<32> miscBits; // 0 stolen gold check,
 
+        // Snapshot of gc.relics' presence bits (all three words) taken in initRelics. The Python
+        // leaf path reads gc.relics (ALL relics, immutable during combat); player.relicBits0/1
+        // cover only ids < 128 and lose relics consumed mid-combat (Centennial Puzzle...).
+        // The C++ featurizer (sim/search/Featurize) reads this so it needs no GameContext.
+        std::array<std::uint64_t, 3> initRelicBits {0, 0, 0};
+
         BattleContext() = default;
         BattleContext(const BattleContext &rhs) = default;
 

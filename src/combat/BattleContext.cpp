@@ -85,6 +85,7 @@ void BattleContext::init(const GameContext &gc, MonsterEncounter encounterToInit
 void BattleContext::initRelics(const GameContext &gc) {
     player.relicBits0 = gc.relics.relicBits0;
     player.relicBits1 = gc.relics.relicBits1;
+    initRelicBits = {gc.relics.relicBits0, gc.relics.relicBits1, gc.relics.relicBits2};
 
     fixed_list<RelicId, 4> atBattleStartPreDraw;
     fixed_list<RelicId, 8> atBattleStart;

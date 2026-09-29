@@ -3,6 +3,7 @@
 //
 
 #include "sim/search/PyLegality.h"
+#include "sim/search/Featurize.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -1489,6 +1490,12 @@ PYBIND11_MODULE(slaythespire, m) {
         return d;
     };
 
+    m.def("featurizer_tables", []() {
+        pybind11::dict d;
+        for (const auto &kv : sts::search::vocabTables()) d[kv.first.c_str()] = kv.second;
+        return d;
+    }, "Vocabularies compiled into the C++ featurizer (generated from the Python tables), by name");
+
     pybind11::class_<BattleContext>(m, "BattleContext")
         .def(pybind11::init<>())
 
@@ -1682,6 +1689,57 @@ PYBIND11_MODULE(slaythespire, m) {
                 return out;
             },
             "76-slot legal-action mask (bool ndarray) emulating the Python enumerator exactly")
+        // C++ emulation of the Python leaf featurization (PLAN-perf-cpp-search C.3): per-section
+        // arrays + per-section exact keys (raw feature bytes). Shape: {section: {field: ndarray}} for
+        // section in scalars/hand/draw/discard/exhaust/card_select/stasis/monster (field names and
+        // dtypes = combat_featurizer's NamedTuples; int64 = torch.long, float32; C-contiguous), plus
+        // "keys": {section: bytes}. draw carries has_frozen_eye (bool) and preview_idx/preview_valid
+        // (None unless has_frozen_eye).
+        .def("featurize_sections",
+            [](const BattleContext &bc, int num_card_types, int hand_slots, int preview_slots,
+               int card_select_slots, int num_monster_slots, int mmid_cap, int era) {
+                namespace py = pybind11;
+                sts::search::FeaturizerConfig cfg;
+                cfg.numCardTypes = num_card_types; cfg.handSlots = hand_slots; cfg.previewSlots = preview_slots;
+                cfg.cardSelectSlots = card_select_slots; cfg.monsterSlots = num_monster_slots;
+                cfg.mmidCap = mmid_cap; cfg.era = era;
+                const sts::search::Features f = sts::search::featurize(bc, cfg);
+                auto mk = [](const auto &vec, std::vector<py::ssize_t> shape) {
+                    using E = typename std::decay_t<decltype(vec)>::value_type;
+                    py::array_t<E> a(shape);
+                    if (!vec.empty()) std::memcpy(a.mutable_data(), vec.data(), vec.size() * sizeof(E));
+                    return a;
+                };
+                const py::ssize_t H = cfg.handSlots, P = cfg.previewSlots, C = cfg.cardSelectSlots;
+                py::dict out, d;
+                d = py::dict(); d["scalars"] = mk(f.scalars, {(py::ssize_t) f.scalars.size()}); out["scalars"] = d;
+                d = py::dict(); d["idx"] = mk(f.handIdx, {H}); d["valid"] = mk(f.handValid, {H, 1});
+                d["scalars"] = mk(f.handScalars, {H, 3}); out["hand"] = d;
+                d = py::dict(); d["idx"] = mk(f.drawIdx, {(py::ssize_t) f.drawIdx.size()});
+                d["has_frozen_eye"] = f.hasFrozenEye;
+                if (f.hasFrozenEye) { d["preview_idx"] = mk(f.previewIdx, {P}); d["preview_valid"] = mk(f.previewValid, {P, 1}); }
+                else { d["preview_idx"] = py::none(); d["preview_valid"] = py::none(); }
+                out["draw"] = d;
+                d = py::dict(); d["idx"] = mk(f.discardIdx, {(py::ssize_t) f.discardIdx.size()}); out["discard"] = d;
+                d = py::dict(); d["idx"] = mk(f.exhaustIdx, {(py::ssize_t) f.exhaustIdx.size()}); out["exhaust"] = d;
+                d = py::dict(); d["idx"] = mk(f.selectIdx, {C}); d["valid"] = mk(f.selectValid, {C, 1}); out["card_select"] = d;
+                d = py::dict(); d["idx"] = mk(f.stasisIdx, {2}); d["valid"] = mk(f.stasisValid, {2, 1}); out["stasis"] = d;
+                d = py::dict(); d["curr"] = mk(f.monCurr, {5}); d["h0"] = mk(f.monH0, {5}); d["h1"] = mk(f.monH1, {5});
+                d["mid"] = mk(f.monMid, {5}); d["turn_col"] = mk(f.monTurnCol, {5, 1});
+                d["statuses"] = mk(f.monStatuses, {5, 42}); d["scalars"] = mk(f.monScalars, {5, 8}); out["monster"] = d;
+                using S = sts::search::FeatSection;
+                py::dict keys;
+                const std::pair<const char *, S> secs[] = {{"scalars", S::Scalars}, {"hand", S::Hand}, {"draw", S::Draw},
+                    {"discard", S::Discard}, {"exhaust", S::Exhaust}, {"card_select", S::CardSelect},
+                    {"stasis", S::Stasis}, {"monster", S::Monster}};
+                for (const auto &sc : secs) keys[sc.first] = py::bytes(sts::search::sectionKey(f, sc.second));
+                out["keys"] = keys;
+                return out;
+            },
+            pybind11::arg("num_card_types") = 364, pybind11::arg("hand_slots") = 10,
+            pybind11::arg("preview_slots") = 5, pybind11::arg("card_select_slots") = 3,
+            pybind11::arg("num_monster_slots") = 5, pybind11::arg("mmid_cap") = 198, pybind11::arg("era") = 1,
+            "C++ emulation of the Python leaf featurization: {section: {field: ndarray}} + keys{section: bytes}")
         .def("fixed_space_compatible",
             [](const BattleContext &bc) { return sts::search::fixedSpaceCompatible(bc); },
             "Emulation of Python is_fixed_space_compatible(state)")
