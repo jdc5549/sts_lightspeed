@@ -2,7 +2,9 @@
 // Created by keega on 9/16/2021.
 //
 
+#include "sim/search/PyLegality.h"
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
 #include <pybind11/functional.h>
@@ -1670,6 +1672,19 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_property_readonly("input_state",
             [](const BattleContext &bc) { return bc.inputState; },
             "Current InputState (PLAYER_NORMAL, CARD_SELECT, etc.)")
+        // C++ emulation of Python legal_action_mask(extract_combat_state(bc, gc)) (PLAN-perf-cpp-search C.2)
+        .def("legal_mask76",
+            [](const BattleContext &bc) {
+                const auto m = sts::search::legalMask76(bc);
+                pybind11::array_t<bool> out(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+                auto r = out.mutable_unchecked<1>();
+                for (int i = 0; i < sts::search::PY_ACTION_SPACE; ++i) r(i) = m[i];
+                return out;
+            },
+            "76-slot legal-action mask (bool ndarray) emulating the Python enumerator exactly")
+        .def("fixed_space_compatible",
+            [](const BattleContext &bc) { return sts::search::fixedSpaceCompatible(bc); },
+            "Emulation of Python is_fixed_space_compatible(state)")
         .def_property_readonly("outcome",
             [](const BattleContext &bc) { return static_cast<int>(bc.outcome); },
             "Current Outcome as int (0=UNDECIDED, 1=PLAYER_VICTORY, 2=PLAYER_LOSS)")
