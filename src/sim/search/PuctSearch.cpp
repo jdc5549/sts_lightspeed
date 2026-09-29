@@ -4,6 +4,7 @@
 
 #include "sim/search/PuctSearch.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -95,8 +96,8 @@ namespace sts::search {
         return b;
     }
 
-    // _expand(node, state, net, nn_cache)
-    double PuctSearch::expand(Node &node, const Bundle &state, const LeafEval &leafEval) {
+    // _expand(node, state, net, nn_cache). `leafEval` may be null only when the nn cache is known to hit.
+    double PuctSearch::expand(Node &node, const Bundle &state, const LeafEval *leafEval) {
         auto it = nn_.find(state.key);
         if (it != nn_.end()) {
             ++counters_.nnHits;
@@ -107,8 +108,9 @@ namespace sts::search {
         }
         ++counters_.nnMisses;
         if (!state.feat) throw std::logic_error("PuctSearch: nn miss on a bundle extracted without features");
+        if (leafEval == nullptr) throw std::logic_error("PuctSearch: nn miss with no leaf evaluator");
         ++counters_.leafEvals;
-        const LeafResult r = leafEval(*state.feat, state.mask);
+        const LeafResult r = (*leafEval)(*state.feat, state.mask);
         node.P = r.P;
         node.mask = state.mask;
         node.expanded = true;
@@ -127,50 +129,63 @@ namespace sts::search {
     }
 
 
+    void PuctSearch::backup(std::vector<PathEnt> &path, double v) {
+        for (auto it = path.rbegin(); it != path.rend(); ++it) {   // reversed(path)
+            it->node->N[it->action] += 1;
+            if (mutation_ == 4)
+                it->node->W[it->action] = static_cast<float>(static_cast<double>(it->node->W[it->action]) + v);
+            else
+                it->node->W[it->action] = wAdd(it->node->W[it->action], v);
+        }
+    }
+
     // _simulate(...). Nodes are pool indices; `pool[0]` is the root.
     double PuctSearch::simulate(std::deque<Node> &pool, const Bundle &rootState, double cPuct,
                                 const LeafEval &leafEval, TerminalMode terminal) {
-        struct PathEnt { Node *node; int action; };
-        std::vector<PathEnt> path;
-        auto doBackup = [&](double v) {
-            for (auto it = path.rbegin(); it != path.rend(); ++it) {   // reversed(path)
-                it->node->N[it->action] += 1;
-                if (mutation_ == 4)
-                    it->node->W[it->action] = static_cast<float>(static_cast<double>(it->node->W[it->action]) + v);
-                else
-                    it->node->W[it->action] = wAdd(it->node->W[it->action], v);
-            }
-        };
+        SimCursor cur;
+        double v = 0.0;
+        descend(pool, rootState, cPuct, &leafEval, terminal, cur, v);
+        return v;
+    }
+
+    bool PuctSearch::descend(std::deque<Node> &pool, const Bundle &rootState, double cPuct,
+                             const LeafEval *leafEval, TerminalMode terminal, SimCursor &cur, double &vOut) {
+        std::vector<PathEnt> &path = cur.path;
         Node *node = &pool[0];
         const Bundle *state = &rootState;
 
         while (true) {
             if (node->bc.outcome != Outcome::UNDECIDED) {          // terminal check
                 const double v = terminalValue(node->bc, terminal);
-                doBackup(v);
-                return v;
+                backup(path, v);
+                vOut = v;
+                return true;
             }
             if (!node->expanded) {                                  // leaf: expand
-                if (!state->compat) { doBackup(0.0); return 0.0; }
+                if (!state->compat) { backup(path, 0.0); vOut = 0.0; return true; }
+                if (leafEval == nullptr && nn_.find(state->key) == nn_.end()) {
+                    cur.node = node;                                // pending: the caller evaluates it
+                    cur.state = state;
+                    return false;
+                }
                 const double v = expand(*node, *state, leafEval);
                 if (mutation_ == 3 && path.empty())
                     path.push_back({node, puctSelectImpl(node->N.data(), node->W.data(), node->P.data(),
                                                          node->mask.data(), cPuct, 0)});
-                doBackup(v);
-                return v;
+                backup(path, v);
+                vOut = v;
+                return true;
             }
             const PyMask76 &mask = node->mask;                      // selection: nn_cache path
             bool any = false;
             for (bool m : mask) any = any || m;
-            if (!any) { doBackup(0.0); return 0.0; }
+            if (!any) { backup(path, 0.0); vOut = 0.0; return true; }
 
             const int a = puctSelectImpl(node->N.data(), node->W.data(), node->P.data(), mask.data(), cPuct,
                                          mutation_);
             path.push_back({node, a});
 
             if (node->child[a] < 0) {
-                const int parentIdx = static_cast<int>(node - &pool[0]);
-                (void)parentIdx;
                 pool.emplace_back();
                 Node &child = pool.back();
                 child.bc = node->bc;                                // clone parent, apply the action
@@ -199,6 +214,21 @@ namespace sts::search {
         }
     }
 
+    // Noise after sim 0 expands the root (always expanded: the caller guarantees the root is fixed-space
+    // compatible and not over, so sim 0 reaches _expand at the root).
+    void PuctSearch::applyRootNoise(Node &root, const Bundle &rootState, const std::vector<double> &noise,
+                                    double eps) {
+        std::size_t i = 0;
+        for (int a = 0; a < PY_ACTION_SPACE; ++a) {
+            if (!rootState.mask[a]) continue;
+            if (i >= noise.size()) throw std::invalid_argument("root noise shorter than legal count");
+            root.P[a] = noiseMix(root.P[a], eps, noise[i]);
+            ++i;
+        }
+        if (i != noise.size()) throw std::invalid_argument("root noise length != legal count");
+        if (mutation_ == 2) nn_[rootState.key].P = root.P;
+    }
+
     TreeResult PuctSearch::runTree(const BattleContext &realBc, std::uint64_t seed, bool reshuffle, int nSims,
                                    double cPuct, const std::vector<double> *rootNoise, double noiseEps,
                                    const LeafEval &leafEval, TerminalMode terminal) {
@@ -216,26 +246,145 @@ namespace sts::search {
             ++counters_.sims;
             const double v = simulate(pool, rootState, cPuct, leafEval, terminal);
             totalValue += v;
-            // Noise after sim 0 expands the root (always expanded: the caller guarantees the root is
-            // fixed-space compatible and not over, so sim 0 reaches _expand at the root).
-            if (rootNoise != nullptr && simIdx == 0 && pool[0].expanded) {
-                Node &root = pool[0];
-                std::size_t i = 0;
-                for (int a = 0; a < PY_ACTION_SPACE; ++a) {
-                    if (!rootState.mask[a]) continue;
-                    if (i >= rootNoise->size()) throw std::invalid_argument("root noise shorter than legal count");
-                    root.P[a] = noiseMix(root.P[a], noiseEps, (*rootNoise)[i]);
-                    ++i;
-                }
-                if (i != rootNoise->size()) throw std::invalid_argument("root noise length != legal count");
-                if (mutation_ == 2) nn_[rootState.key].P = root.P;
-            }
+            if (rootNoise != nullptr && simIdx == 0 && pool[0].expanded)
+                applyRootNoise(pool[0], rootState, *rootNoise, noiseEps);
         }
         TreeResult res;
         res.rawN = pool[0].N;
         lastRootW_ = pool[0].W;
         res.rootValue = nSims > 0 ? totalValue / static_cast<double>(nSims) : 0.0;
         return res;
+    }
+
+    std::vector<TreeResult> PuctSearch::runTreesLockstep(
+            const BattleContext &realBc, const std::vector<std::uint64_t> &seeds, bool reshuffle, int nSims,
+            double cPuct, const std::vector<const std::vector<double> *> &rootNoises, double noiseEps,
+            const BatchLeafEval &batchEval, TerminalMode terminal) {
+        const std::size_t K = seeds.size();
+        if (rootNoises.size() != K) throw std::invalid_argument("runTreesLockstep: one noise slot per tree");
+        counters_.trees += static_cast<long long>(K);
+        // One root bundle from the REAL bc, shared by every tree (runTree builds an identical one per tree;
+        // the only difference is the features, present iff the root key is not yet in the nn cache).
+        Bundle rootState = makeBundle(realBc, true);
+
+        struct Tree {
+            std::deque<Node> pool;
+            double totalValue = 0.0;
+        };
+        std::vector<std::unique_ptr<Tree>> trees;
+        trees.reserve(K);
+        for (std::size_t k = 0; k < K; ++k) {
+            trees.push_back(std::make_unique<Tree>());
+            trees[k]->pool.emplace_back();
+            trees[k]->pool[0].bc = cloneWithFreshRng(realBc, seeds[k], reshuffle);
+            ++counters_.nodes;
+        }
+
+        auto afterSim = [&](std::size_t k, int simIdx) {
+            if (rootNoises[k] != nullptr && simIdx == 0 && trees[k]->pool[0].expanded)
+                applyRootNoise(trees[k]->pool[0], rootState, *rootNoises[k], noiseEps);
+        };
+
+        struct Pending { std::size_t tree; SimCursor cur; int row; };
+        for (int simIdx = 0; simIdx < nSims; ++simIdx) {
+            ++counters_.lockstepSteps;
+            std::vector<Pending> pend;
+            for (std::size_t k = 0; k < K; ++k) {                      // ascending tree index
+                ++counters_.sims;
+                SimCursor cur;
+                double v = 0.0;
+                if (descend(trees[k]->pool, rootState, cPuct, nullptr, terminal, cur, v)) {
+                    trees[k]->totalValue += v;
+                    afterSim(k, simIdx);
+                } else {
+                    pend.push_back(Pending{k, std::move(cur), -1});
+                }
+            }
+            if (pend.empty()) continue;
+
+            // Batch composition: a pure function of the inputs. Rows = distinct nn keys at FIRST occurrence
+            // in ascending tree order; no padding.
+            std::unordered_map<std::string, int> rowOf;
+            std::vector<const Features *> feats;
+            std::vector<const PyMask76 *> masks;
+            for (auto &p : pend) {
+                const Bundle &b = *p.cur.state;
+                auto it = rowOf.find(b.key);
+                if (it == rowOf.end()) {
+                    if (!b.feat) throw std::logic_error("PuctSearch: pending leaf without features");
+                    p.row = static_cast<int>(feats.size());
+                    rowOf.emplace(b.key, p.row);
+                    feats.push_back(b.feat.get());
+                    masks.push_back(&b.mask);
+                } else {
+                    p.row = it->second;
+                }
+            }
+            const std::size_t nRows = feats.size();
+            if (recordLog_) {
+                std::vector<LockstepLogEntry> log;
+                for (const auto &p : pend) {
+                    std::string sig;
+                    const Features &f = *feats[static_cast<std::size_t>(p.row)];
+                    for (int sct = 0; sct < kNumFeatSections; ++sct) sig += sectionKey(f, static_cast<FeatSection>(sct));
+                    log.push_back(LockstepLogEntry{static_cast<int>(p.tree), p.cur.state->key, p.row, std::move(sig)});
+                }
+                lockstepLog_.push_back(std::move(log));
+            }
+            ++counters_.batchCalls;
+            counters_.leavesSubmitted += static_cast<long long>(pend.size());
+            counters_.distinctRows += static_cast<long long>(nRows);
+            if (static_cast<long long>(nRows) > counters_.maxBatch) counters_.maxBatch = static_cast<long long>(nRows);
+
+            std::vector<LeafResult> results;
+            if (mutation_ == 5) {                                       // TEST ONLY: reversed composition
+                std::vector<const Features *> rf(feats.rbegin(), feats.rend());
+                std::vector<const PyMask76 *> rm(masks.rbegin(), masks.rend());
+                results = batchEval(rf, rm);
+                if (results.size() == nRows) std::reverse(results.begin(), results.end());
+            } else {
+                results = batchEval(feats, masks);
+            }
+            if (results.size() != nRows)
+                throw std::invalid_argument("batch leaf evaluator returned a wrong number of rows");
+
+            std::vector<bool> inserted(nRows, false);
+            for (auto &p : pend) {                                       // ascending tree index
+                Tree &t = *trees[p.tree];
+                Node &node = *p.cur.node;
+                const Bundle &b = *p.cur.state;
+                double v;
+                if (!inserted[static_cast<std::size_t>(p.row)]) {
+                    inserted[static_cast<std::size_t>(p.row)] = true;
+                    ++counters_.nnMisses;
+                    ++counters_.leafEvals;
+                    const LeafResult &r = results[static_cast<std::size_t>(p.row)];
+                    node.P = r.P;
+                    node.mask = b.mask;
+                    node.expanded = true;
+                    nn_.emplace(b.key, NNEntry{b.mask, r.P, r.value});   // once; its own copy of P
+                    v = r.value;
+                } else {
+                    v = expand(node, b, nullptr);                        // shares the row: a cache hit
+                }
+                if (mutation_ == 3 && p.cur.path.empty())
+                    p.cur.path.push_back({&node, puctSelectImpl(node.N.data(), node.W.data(), node.P.data(),
+                                                                node.mask.data(), cPuct, 0)});
+                backup(p.cur.path, v);
+                t.totalValue += v;
+                afterSim(p.tree, simIdx);
+            }
+        }
+
+        std::vector<TreeResult> out(K);
+        lastRootWs_.assign(K, std::array<float, PY_ACTION_SPACE>{});
+        for (std::size_t k = 0; k < K; ++k) {
+            out[k].rawN = trees[k]->pool[0].N;
+            lastRootWs_[k] = trees[k]->pool[0].W;
+            out[k].rootValue = nSims > 0 ? trees[k]->totalValue / static_cast<double>(nSims) : 0.0;
+        }
+        if (K > 0) lastRootW_ = lastRootWs_[K - 1];
+        return out;
     }
 
 }

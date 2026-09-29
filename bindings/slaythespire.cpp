@@ -1566,8 +1566,34 @@ PYBIND11_MODULE(slaythespire, m) {
             d["extract_misses"] = c.extractMisses; d["leaf_evals"] = c.leafEvals; d["sims"] = c.sims;
             d["trees"] = c.trees; d["nodes"] = c.nodes; d["actions_applied"] = c.actionsApplied;
             d["nn_cache_size"] = ps.nnCacheSize(); d["extract_cache_size"] = ps.extractCacheSize();
+            d["lockstep_steps"] = c.lockstepSteps; d["batch_calls"] = c.batchCalls;
+            d["leaves_submitted"] = c.leavesSubmitted; d["distinct_rows"] = c.distinctRows;
+            d["max_batch"] = c.maxBatch;
             return d;
         })
+        .def("set_record_lockstep_log", &sts::search::PuctSearch::setRecordLockstepLog,
+             "TEST ONLY: record one (tree, nn_key, row, sig) list per lockstep step")
+        .def("clear_lockstep_log", &sts::search::PuctSearch::clearLockstepLog)
+        .def("lockstep_log", [](const sts::search::PuctSearch &ps) {
+            namespace py = pybind11;
+            py::list steps;
+            for (const auto &step : ps.lockstepLog()) {
+                py::list entries;
+                for (const auto &e : step)
+                    entries.append(py::make_tuple(e.tree, py::bytes(e.nnKey), e.row, py::bytes(e.sig)));
+                steps.append(entries);
+            }
+            return steps;
+        }, "Per-step [(tree, nn_key bytes, row, section-keys sig bytes)] recorded while logging is on")
+        .def("last_root_ws", [](const sts::search::PuctSearch &ps) {
+            const auto &v = ps.lastRootWs();
+            pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{static_cast<pybind11::ssize_t>(v.size()),
+                                                                        sts::search::PY_ACTION_SPACE});
+            for (std::size_t k = 0; k < v.size(); ++k)
+                std::memcpy(out.mutable_data() + k * sts::search::PY_ACTION_SPACE, v[k].data(),
+                            sizeof(float) * sts::search::PY_ACTION_SPACE);
+            return out;
+        }, "Root W (float32[K,76]) of every tree of the last run_trees_lockstep")
         .def("run_tree",
             [](sts::search::PuctSearch &ps, const BattleContext &bc, std::uint64_t seed, bool reshuffle, int n_sims,
                double c_puct, pybind11::object root_noise, double noise_eps, pybind11::function leaf_eval,
@@ -1613,7 +1639,77 @@ PYBIND11_MODULE(slaythespire, m) {
             pybind11::arg("bc"), pybind11::arg("seed"), pybind11::arg("reshuffle"), pybind11::arg("n_sims"),
             pybind11::arg("c_puct"), pybind11::arg("root_noise"), pybind11::arg("noise_eps"),
             pybind11::arg("leaf_eval"), pybind11::arg("terminal_mode"),
-            "One determinization (clone_with_fresh_rng + n_sims sims) -> (raw_N int32[76], root_value)");
+            "One determinization (clone_with_fresh_rng + n_sims sims) -> (raw_N int32[76], root_value)")
+        .def("run_trees_lockstep",
+            [](sts::search::PuctSearch &ps, const BattleContext &bc, const std::vector<std::uint64_t> &seeds,
+               bool reshuffle, int n_sims, double c_puct, pybind11::list root_noises, double noise_eps,
+               pybind11::function batch_eval, const std::string &terminal_mode) {
+                namespace py = pybind11;
+                sts::search::TerminalMode tm;
+                if (terminal_mode == "outcome") tm = sts::search::TerminalMode::Outcome;
+                else if (terminal_mode == "hp_fraction") tm = sts::search::TerminalMode::HpFraction;
+                else throw std::invalid_argument("run_trees_lockstep: unknown terminal_mode '" + terminal_mode + "'");
+                if (root_noises.size() != seeds.size())
+                    throw std::invalid_argument("run_trees_lockstep: root_noises needs one entry (ndarray or None) per seed");
+                std::vector<std::vector<double>> noiseStore(seeds.size());
+                std::vector<const std::vector<double> *> noisePtrs(seeds.size(), nullptr);
+                for (std::size_t k = 0; k < seeds.size(); ++k) {
+                    py::object o = root_noises[k];
+                    if (o.is_none()) continue;
+                    if (!py::isinstance<py::array_t<double, py::array::c_style>>(o))
+                        throw std::invalid_argument("root_noises entries must be C-contiguous float64 ndarrays or None");
+                    auto arr = py::cast<py::array_t<double, py::array::c_style>>(o);
+                    if (arr.ndim() != 1) throw std::invalid_argument("root noise must be 1-D");
+                    noiseStore[k].assign(arr.data(), arr.data() + arr.size());
+                    noisePtrs[k] = &noiseStore[k];
+                }
+                const sts::search::FeaturizerConfig cfg = ps.config();
+                sts::search::BatchLeafEval cb = [&](const std::vector<const sts::search::Features *> &feats,
+                                                    const std::vector<const sts::search::PyMask76 *> &masks) {
+                    py::list secs, mks;
+                    for (std::size_t i = 0; i < feats.size(); ++i) {
+                        secs.append(featuresToPy(*feats[i], cfg));
+                        py::array_t<bool> m_arr(std::vector<py::ssize_t>{sts::search::PY_ACTION_SPACE});
+                        auto r = m_arr.mutable_unchecked<1>();
+                        for (int j = 0; j < sts::search::PY_ACTION_SPACE; ++j) r(j) = (*masks[i])[j];
+                        mks.append(m_arr);
+                    }
+                    py::object out = batch_eval(secs, mks);
+                    py::list rows = py::cast<py::list>(out);
+                    if (rows.size() != feats.size())
+                        throw std::invalid_argument("batch_eval must return one (P, value) per row");
+                    std::vector<sts::search::LeafResult> results;
+                    results.reserve(rows.size());
+                    for (py::handle h : rows) {
+                        py::tuple t = py::cast<py::tuple>(h);
+                        if (t.size() != 2) throw std::invalid_argument("batch_eval rows must be (P, value)");
+                        if (!py::isinstance<py::array_t<float, py::array::c_style>>(t[0]))
+                            throw std::invalid_argument("batch_eval P must be a C-contiguous float32 ndarray");
+                        auto pa = py::cast<py::array_t<float, py::array::c_style>>(t[0]);
+                        if (pa.ndim() != 1 || pa.size() != sts::search::PY_ACTION_SPACE)
+                            throw std::invalid_argument("batch_eval P must have shape (76,)");
+                        sts::search::LeafResult res;
+                        std::memcpy(res.P.data(), pa.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+                        res.value = py::cast<double>(t[1]);
+                        results.push_back(res);
+                    }
+                    return results;
+                };
+                std::vector<sts::search::TreeResult> trs =
+                    ps.runTreesLockstep(bc, seeds, reshuffle, n_sims, c_puct, noisePtrs, noise_eps, cb, tm);
+                py::list out;
+                for (const auto &tr : trs) {
+                    py::array_t<std::int32_t> rawN(std::vector<py::ssize_t>{sts::search::PY_ACTION_SPACE});
+                    std::memcpy(rawN.mutable_data(), tr.rawN.data(), sizeof(std::int32_t) * sts::search::PY_ACTION_SPACE);
+                    out.append(py::make_tuple(rawN, tr.rootValue));
+                }
+                return out;
+            },
+            pybind11::arg("bc"), pybind11::arg("seeds"), pybind11::arg("reshuffle"), pybind11::arg("n_sims"),
+            pybind11::arg("c_puct"), pybind11::arg("root_noises"), pybind11::arg("noise_eps"),
+            pybind11::arg("batch_eval"), pybind11::arg("terminal_mode"),
+            "K determinizations advanced in lockstep (S.1); batch_eval(list[sections], list[mask]) -> list[(P, value)]. "
+            "Returns [(raw_N int32[76], root_value)] in tree order");
 
     // pure pieces for the bitwise unit tests
     m.def("puct_test_w_add", [](pybind11::array_t<float, pybind11::array::c_style> w,
