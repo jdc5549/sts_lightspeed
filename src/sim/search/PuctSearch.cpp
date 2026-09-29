@@ -80,6 +80,58 @@ namespace sts::search {
         return puctSelectImpl(N, W, P, mask, cPuct, mutation);
     }
 
+    int puctSelectVL(const std::int32_t *N, const std::int32_t *vl, const float *W, const float *P,
+                     const bool *mask, double cPuct, double vLoss) {
+        long long sumN = 0;
+        for (int i = 0; i < PY_ACTION_SPACE; ++i) sumN += static_cast<long long>(N[i]) + vl[i];   // N'
+        const double sqrtSumN = sumN > 0 ? std::sqrt(static_cast<double>(sumN)) : 0.0;
+        int first = -1;
+        for (int i = 0; i < PY_ACTION_SPACE; ++i) if (mask[i]) { first = i; break; }
+        if (first < 0) throw std::logic_error("puctSelectVL: no legal action");
+        double bestScore = -std::numeric_limits<double>::infinity();
+        int bestAction = first;
+        for (int a = 0; a < PY_ACTION_SPACE; ++a) {
+            if (!mask[a]) continue;
+            const long long n = static_cast<long long>(N[a]) + vl[a];                               // N'
+            const double w = static_cast<double>(W[a]) + static_cast<double>(vl[a]) * vLoss;         // W', double
+            const double p = static_cast<double>(P[a]);
+            const double q = w / static_cast<double>(n > 1 ? n : 1);
+            const double u = cPuct * p * sqrtSumN / static_cast<double>(1 + n);
+            const double puct = q + u;
+            if (puct > bestScore) { bestScore = puct; bestAction = a; }
+        }
+        return bestAction;
+    }
+
+    std::size_t PuctSearch::nodeBytes() { return sizeof(Node); }
+
+    void PuctSearch::vlCharge(std::vector<PathEnt> &path, double vlValue) {
+        for (auto &e : path) {
+            if (mutation_ == 7) {                       // TEST ONLY: charge written into the REAL N/W
+                e.node->N[e.action] += 1;
+                e.node->W[e.action] = wAdd(e.node->W[e.action], vlValue);
+            } else {
+                e.node->vlN[e.action] += 1;
+                e.node->vlSum += 1;
+            }
+            ++vlInflight_;
+        }
+    }
+
+    void PuctSearch::vlRelease(std::vector<PathEnt> &path, double vlValue) {
+        if (mutation_ == 6) return;                     // TEST ONLY: the reversal is skipped
+        for (auto &e : path) {
+            if (mutation_ == 7) {                       // "reversed" in float32: does not round-trip
+                e.node->N[e.action] -= 1;
+                e.node->W[e.action] = e.node->W[e.action] - static_cast<float>(vlValue);
+            } else {
+                e.node->vlN[e.action] -= 1;
+                e.node->vlSum -= 1;
+            }
+            --vlInflight_;
+        }
+    }
+
     void PuctSearch::clear() {
         nn_.clear();
         extract_.clear();
@@ -149,7 +201,8 @@ namespace sts::search {
     }
 
     bool PuctSearch::descend(std::deque<Node> &pool, const Bundle &rootState, double cPuct,
-                             const LeafEval *leafEval, TerminalMode terminal, SimCursor &cur, double &vOut) {
+                             const LeafEval *leafEval, TerminalMode terminal, SimCursor &cur, double &vOut,
+                             int vlStep, double vlValue) {
         std::vector<PathEnt> &path = cur.path;
         Node *node = &pool[0];
         const Bundle *state = &rootState;
@@ -163,6 +216,12 @@ namespace sts::search {
             }
             if (!node->expanded) {                                  // leaf: expand
                 if (!state->compat) { backup(path, 0.0); vOut = 0.0; return true; }
+                if (leafEval == nullptr && vlStep >= 0 && node->pendStep == vlStep) {
+                    cur.node = node;                                // COLLISION: already pending in this step
+                    cur.state = state;
+                    cur.collision = true;
+                    return false;
+                }
                 if (leafEval == nullptr && nn_.find(state->key) == nn_.end()) {
                     cur.node = node;                                // pending: the caller evaluates it
                     cur.state = state;
@@ -181,8 +240,12 @@ namespace sts::search {
             for (bool m : mask) any = any || m;
             if (!any) { backup(path, 0.0); vOut = 0.0; return true; }
 
-            const int a = puctSelectImpl(node->N.data(), node->W.data(), node->P.data(), mask.data(), cPuct,
-                                         mutation_);
+            // vlSum == 0 (always so on the runTree path and whenever nothing is in flight here): today's exact
+            // code on real N/W. Otherwise the virtual-loss-aware selection on N' / W'.
+            const int a = node->vlSum == 0
+                ? puctSelectImpl(node->N.data(), node->W.data(), node->P.data(), mask.data(), cPuct, mutation_)
+                : puctSelectVL(node->N.data(), node->vlN.data(), node->W.data(), node->P.data(), mask.data(),
+                               cPuct, vlValue);
             path.push_back({node, a});
 
             if (node->child[a] < 0) {
@@ -259,9 +322,10 @@ namespace sts::search {
     std::vector<TreeResult> PuctSearch::runTreesLockstep(
             const BattleContext &realBc, const std::vector<std::uint64_t> &seeds, bool reshuffle, int nSims,
             double cPuct, const std::vector<const std::vector<double> *> &rootNoises, double noiseEps,
-            const BatchLeafEval &batchEval, TerminalMode terminal) {
+            const BatchLeafEval &batchEval, TerminalMode terminal, int vlBatch, double vlValue) {
         const std::size_t K = seeds.size();
         if (rootNoises.size() != K) throw std::invalid_argument("runTreesLockstep: one noise slot per tree");
+        if (vlBatch < 1) throw std::invalid_argument("runTreesLockstep: virtual-loss batch must be >= 1");
         counters_.trees += static_cast<long long>(K);
         // One root bundle from the REAL bc, shared by every tree (runTree builds an identical one per tree;
         // the only difference is the features, present iff the root key is not yet in the nn cache).
@@ -286,94 +350,114 @@ namespace sts::search {
         };
 
         struct Pending { std::size_t tree; SimCursor cur; int row; };
-        for (int simIdx = 0; simIdx < nSims; ++simIdx) {
+        int done = 0;                                   // sims completed per tree (uniform across trees)
+        int step = 0;
+        vlInflight_ = 0;
+        while (done < nSims) {
+            // Step 0 is ONE descent per tree (the root expansion; noise follows). Later steps: up to B.
+            const int per = step == 0 ? 1 : std::min(vlBatch, nSims - done);
             ++counters_.lockstepSteps;
             std::vector<Pending> pend;
             for (std::size_t k = 0; k < K; ++k) {                      // ascending tree index
-                ++counters_.sims;
-                SimCursor cur;
-                double v = 0.0;
-                if (descend(trees[k]->pool, rootState, cPuct, nullptr, terminal, cur, v)) {
-                    trees[k]->totalValue += v;
-                    afterSim(k, simIdx);
-                } else {
-                    pend.push_back(Pending{k, std::move(cur), -1});
+                for (int d = 0; d < per; ++d) {                        // descents within a tree, in order
+                    ++counters_.sims;
+                    SimCursor cur;
+                    double v = 0.0;
+                    if (descend(trees[k]->pool, rootState, cPuct, nullptr, terminal, cur, v, step, vlValue)) {
+                        trees[k]->totalValue += v;                     // finished w/o a net call: real backup, uncharged
+                        afterSim(k, done + d);
+                    } else {
+                        if (cur.collision) ++counters_.vlCollisions;
+                        else cur.node->pendStep = step;
+                        vlCharge(cur.path, vlValue);
+                        ++counters_.vlDescents;
+                        pend.push_back(Pending{k, std::move(cur), -1});
+                    }
                 }
             }
-            if (pend.empty()) continue;
+            if (static_cast<long long>(pend.size()) > counters_.vlPendingMax)
+                counters_.vlPendingMax = static_cast<long long>(pend.size());
+            if (!pend.empty()) {
+                // Batch composition: a pure function of the inputs. Rows = distinct nn keys at FIRST occurrence
+                // in (tree, order); no padding.
+                std::unordered_map<std::string, int> rowOf;
+                std::vector<const Features *> feats;
+                std::vector<const PyMask76 *> masks;
+                for (auto &p : pend) {
+                    const Bundle &b = *p.cur.state;
+                    auto it = rowOf.find(b.key);
+                    if (it == rowOf.end()) {
+                        if (!b.feat) throw std::logic_error("PuctSearch: pending leaf without features");
+                        p.row = static_cast<int>(feats.size());
+                        rowOf.emplace(b.key, p.row);
+                        feats.push_back(b.feat.get());
+                        masks.push_back(&b.mask);
+                    } else {
+                        p.row = it->second;
+                    }
+                }
+                const std::size_t nRows = feats.size();
+                if (recordLog_) {
+                    std::vector<LockstepLogEntry> log;
+                    for (const auto &p : pend) {
+                        std::string sig;
+                        const Features &f = *feats[static_cast<std::size_t>(p.row)];
+                        for (int sct = 0; sct < kNumFeatSections; ++sct) sig += sectionKey(f, static_cast<FeatSection>(sct));
+                        log.push_back(LockstepLogEntry{static_cast<int>(p.tree), p.cur.state->key, p.row, std::move(sig)});
+                    }
+                    lockstepLog_.push_back(std::move(log));
+                }
+                ++counters_.batchCalls;
+                counters_.leavesSubmitted += static_cast<long long>(pend.size());
+                counters_.distinctRows += static_cast<long long>(nRows);
+                if (static_cast<long long>(nRows) > counters_.maxBatch) counters_.maxBatch = static_cast<long long>(nRows);
 
-            // Batch composition: a pure function of the inputs. Rows = distinct nn keys at FIRST occurrence
-            // in ascending tree order; no padding.
-            std::unordered_map<std::string, int> rowOf;
-            std::vector<const Features *> feats;
-            std::vector<const PyMask76 *> masks;
-            for (auto &p : pend) {
-                const Bundle &b = *p.cur.state;
-                auto it = rowOf.find(b.key);
-                if (it == rowOf.end()) {
-                    if (!b.feat) throw std::logic_error("PuctSearch: pending leaf without features");
-                    p.row = static_cast<int>(feats.size());
-                    rowOf.emplace(b.key, p.row);
-                    feats.push_back(b.feat.get());
-                    masks.push_back(&b.mask);
+                std::vector<LeafResult> results;
+                if (mutation_ == 5) {                                       // TEST ONLY: reversed composition
+                    std::vector<const Features *> rf(feats.rbegin(), feats.rend());
+                    std::vector<const PyMask76 *> rm(masks.rbegin(), masks.rend());
+                    results = batchEval(rf, rm);
+                    if (results.size() == nRows) std::reverse(results.begin(), results.end());
                 } else {
-                    p.row = it->second;
+                    results = batchEval(feats, masks);
                 }
-            }
-            const std::size_t nRows = feats.size();
-            if (recordLog_) {
-                std::vector<LockstepLogEntry> log;
-                for (const auto &p : pend) {
-                    std::string sig;
-                    const Features &f = *feats[static_cast<std::size_t>(p.row)];
-                    for (int sct = 0; sct < kNumFeatSections; ++sct) sig += sectionKey(f, static_cast<FeatSection>(sct));
-                    log.push_back(LockstepLogEntry{static_cast<int>(p.tree), p.cur.state->key, p.row, std::move(sig)});
-                }
-                lockstepLog_.push_back(std::move(log));
-            }
-            ++counters_.batchCalls;
-            counters_.leavesSubmitted += static_cast<long long>(pend.size());
-            counters_.distinctRows += static_cast<long long>(nRows);
-            if (static_cast<long long>(nRows) > counters_.maxBatch) counters_.maxBatch = static_cast<long long>(nRows);
+                if (results.size() != nRows)
+                    throw std::invalid_argument("batch leaf evaluator returned a wrong number of rows");
 
-            std::vector<LeafResult> results;
-            if (mutation_ == 5) {                                       // TEST ONLY: reversed composition
-                std::vector<const Features *> rf(feats.rbegin(), feats.rend());
-                std::vector<const PyMask76 *> rm(masks.rbegin(), masks.rend());
-                results = batchEval(rf, rm);
-                if (results.size() == nRows) std::reverse(results.begin(), results.end());
-            } else {
-                results = batchEval(feats, masks);
-            }
-            if (results.size() != nRows)
-                throw std::invalid_argument("batch leaf evaluator returned a wrong number of rows");
-
-            std::vector<bool> inserted(nRows, false);
-            for (auto &p : pend) {                                       // ascending tree index
-                Tree &t = *trees[p.tree];
-                Node &node = *p.cur.node;
-                const Bundle &b = *p.cur.state;
-                double v;
-                if (!inserted[static_cast<std::size_t>(p.row)]) {
-                    inserted[static_cast<std::size_t>(p.row)] = true;
-                    ++counters_.nnMisses;
-                    ++counters_.leafEvals;
-                    const LeafResult &r = results[static_cast<std::size_t>(p.row)];
-                    node.P = r.P;
-                    node.mask = b.mask;
-                    node.expanded = true;
-                    nn_.emplace(b.key, NNEntry{b.mask, r.P, r.value});   // once; its own copy of P
-                    v = r.value;
-                } else {
-                    v = expand(node, b, nullptr);                        // shares the row: a cache hit
+                std::vector<bool> inserted(nRows, false);
+                for (auto &p : pend) {                                       // (tree, order)
+                    Tree &t = *trees[p.tree];
+                    Node &node = *p.cur.node;
+                    const Bundle &b = *p.cur.state;
+                    vlRelease(p.cur.path, vlValue);                          // this descent's charge comes off first
+                    double v;
+                    if (node.expanded) {
+                        // a collision: the node was expanded by an earlier registered descent this step
+                        v = results[static_cast<std::size_t>(p.row)].value;
+                    } else if (!inserted[static_cast<std::size_t>(p.row)]) {
+                        inserted[static_cast<std::size_t>(p.row)] = true;
+                        ++counters_.nnMisses;
+                        ++counters_.leafEvals;
+                        const LeafResult &r = results[static_cast<std::size_t>(p.row)];
+                        node.P = r.P;
+                        node.mask = b.mask;
+                        node.expanded = true;
+                        nn_.emplace(b.key, NNEntry{b.mask, r.P, r.value});   // once; its own copy of P
+                        v = r.value;
+                    } else {
+                        v = expand(node, b, nullptr);                        // shares the row: a cache hit
+                    }
+                    if (mutation_ == 3 && p.cur.path.empty())
+                        p.cur.path.push_back({&node, puctSelectImpl(node.N.data(), node.W.data(), node.P.data(),
+                                                                    node.mask.data(), cPuct, 0)});
+                    backup(p.cur.path, v);
+                    t.totalValue += v;
+                    afterSim(p.tree, done);                                  // root noise only matters at sim 0
                 }
-                if (mutation_ == 3 && p.cur.path.empty())
-                    p.cur.path.push_back({&node, puctSelectImpl(node.N.data(), node.W.data(), node.P.data(),
-                                                                node.mask.data(), cPuct, 0)});
-                backup(p.cur.path, v);
-                t.totalValue += v;
-                afterSim(p.tree, simIdx);
             }
+            if (vlInflight_ > counters_.vlInflightAfterStepMax) counters_.vlInflightAfterStepMax = vlInflight_;
+            done += per;
+            ++step;
         }
 
         std::vector<TreeResult> out(K);
@@ -382,6 +466,11 @@ namespace sts::search {
             out[k].rawN = trees[k]->pool[0].N;
             lastRootWs_[k] = trees[k]->pool[0].W;
             out[k].rootValue = nSims > 0 ? trees[k]->totalValue / static_cast<double>(nSims) : 0.0;
+            if (static_cast<long long>(trees[k]->pool.size()) > counters_.peakTreeNodes)
+                counters_.peakTreeNodes = static_cast<long long>(trees[k]->pool.size());
+            if (debugChecks_)
+                for (const auto &nd : trees[k]->pool)
+                    if (nd.vlSum != 0) throw std::logic_error("PuctSearch: virtual loss left in flight after the search");
         }
         if (K > 0) lastRootW_ = lastRootWs_[K - 1];
         return out;

@@ -1569,11 +1569,17 @@ PYBIND11_MODULE(slaythespire, m) {
             d["lockstep_steps"] = c.lockstepSteps; d["batch_calls"] = c.batchCalls;
             d["leaves_submitted"] = c.leavesSubmitted; d["distinct_rows"] = c.distinctRows;
             d["max_batch"] = c.maxBatch;
+            d["vl_descents"] = c.vlDescents; d["vl_collisions"] = c.vlCollisions;
+            d["vl_pending_max"] = c.vlPendingMax; d["peak_tree_nodes"] = c.peakTreeNodes;
+            d["vl_inflight_after_step_max"] = c.vlInflightAfterStepMax;
             return d;
         })
         .def("set_record_lockstep_log", &sts::search::PuctSearch::setRecordLockstepLog,
              "TEST ONLY: record one (tree, nn_key, row, sig) list per lockstep step")
         .def("clear_lockstep_log", &sts::search::PuctSearch::clearLockstepLog)
+        .def("set_debug_checks", &sts::search::PuctSearch::setDebugChecks,
+             "TEST ONLY: throw if any virtual loss is left on any node after a lockstep search")
+        .def_static("node_bytes", &sts::search::PuctSearch::nodeBytes, "sizeof(one tree node), bytes")
         .def("lockstep_log", [](const sts::search::PuctSearch &ps) {
             namespace py = pybind11;
             py::list steps;
@@ -1643,7 +1649,8 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("run_trees_lockstep",
             [](sts::search::PuctSearch &ps, const BattleContext &bc, const std::vector<std::uint64_t> &seeds,
                bool reshuffle, int n_sims, double c_puct, pybind11::list root_noises, double noise_eps,
-               pybind11::function batch_eval, const std::string &terminal_mode) {
+               pybind11::function batch_eval, const std::string &terminal_mode, int virtual_loss_batch,
+               double virtual_loss_value) {
                 namespace py = pybind11;
                 sts::search::TerminalMode tm;
                 if (terminal_mode == "outcome") tm = sts::search::TerminalMode::Outcome;
@@ -1696,7 +1703,8 @@ PYBIND11_MODULE(slaythespire, m) {
                     return results;
                 };
                 std::vector<sts::search::TreeResult> trs =
-                    ps.runTreesLockstep(bc, seeds, reshuffle, n_sims, c_puct, noisePtrs, noise_eps, cb, tm);
+                    ps.runTreesLockstep(bc, seeds, reshuffle, n_sims, c_puct, noisePtrs, noise_eps, cb, tm,
+                                        virtual_loss_batch, virtual_loss_value);
                 py::list out;
                 for (const auto &tr : trs) {
                     py::array_t<std::int32_t> rawN(std::vector<py::ssize_t>{sts::search::PY_ACTION_SPACE});
@@ -1708,7 +1716,8 @@ PYBIND11_MODULE(slaythespire, m) {
             pybind11::arg("bc"), pybind11::arg("seeds"), pybind11::arg("reshuffle"), pybind11::arg("n_sims"),
             pybind11::arg("c_puct"), pybind11::arg("root_noises"), pybind11::arg("noise_eps"),
             pybind11::arg("batch_eval"), pybind11::arg("terminal_mode"),
-            "K determinizations advanced in lockstep (S.1); batch_eval(list[sections], list[mask]) -> list[(P, value)]. "
+            pybind11::arg("virtual_loss_batch") = 1, pybind11::arg("virtual_loss_value") = -1.0,
+            "K determinizations advanced in lockstep (S.1; virtual loss B > 1 = S.2); batch_eval(list[sections], list[mask]) -> list[(P, value)]. "
             "Returns [(raw_N int32[76], root_value)] in tree order");
 
     // pure pieces for the bitwise unit tests
@@ -1725,6 +1734,15 @@ PYBIND11_MODULE(slaythespire, m) {
         pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{static_cast<pybind11::ssize_t>(p.size())});
         for (pybind11::ssize_t i = 0; i < p.size(); ++i) out.mutable_data()[i] = sts::search::noiseMix(p.data()[i], eps, nz.data()[i]);
         return out;
+    });
+    m.def("puct_test_select_vl", [](pybind11::array_t<std::int32_t, pybind11::array::c_style> N,
+                                    pybind11::array_t<std::int32_t, pybind11::array::c_style> vl,
+                                    pybind11::array_t<float, pybind11::array::c_style> W,
+                                    pybind11::array_t<float, pybind11::array::c_style> P,
+                                    pybind11::array_t<bool, pybind11::array::c_style> mask, double c, double vloss) {
+        if (N.size() != 76 || vl.size() != 76 || W.size() != 76 || P.size() != 76 || mask.size() != 76)
+            throw std::invalid_argument("need 76");
+        return sts::search::puctSelectVL(N.data(), vl.data(), W.data(), P.data(), mask.data(), c, vloss);
     });
     m.def("puct_test_select", [](pybind11::array_t<std::int32_t, pybind11::array::c_style> N,
                                  pybind11::array_t<float, pybind11::array::c_style> W,
