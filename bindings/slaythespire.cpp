@@ -4,6 +4,7 @@
 
 #include "sim/search/PyLegality.h"
 #include "sim/search/Featurize.h"
+#include "sim/search/StateKey.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -1490,6 +1491,12 @@ PYBIND11_MODULE(slaythespire, m) {
         return d;
     };
 
+    m.def("state_key_field_names", []() {
+        pybind11::dict d;
+        for (const auto &kv : sts::search::stateKeyFieldNames()) d[kv.first.c_str()] = kv.second;
+        return d;
+    }, "Field-name lists the C++ state key serialises (generated from the CombatState dataclasses)");
+
     m.def("featurizer_tables", []() {
         pybind11::dict d;
         for (const auto &kv : sts::search::vocabTables()) d[kv.first.c_str()] = kv.second;
@@ -1655,6 +1662,32 @@ PYBIND11_MODULE(slaythespire, m) {
             pybind11::arg("card_id"), pybind11::arg("upgraded") = false,
             "TEST ONLY: add a card directly to the exhaust pile, bypassing normal exhaust flow")
 
+        // TEST ONLY (C.4c): append / edit cards in a pile (0 draw, 1 discard, 2 exhaust) without any game flow,
+        // to build states that differ ONLY in a field the encoder does not see (pile per-card cost,
+        // cost_for_turn, upgraded, out-of-vocabulary card). Not used by any agent/runner code path.
+        .def("debug_add_pile_card",
+            [](BattleContext &bc, int pile, CardId card_id, bool upgraded) {
+                CardInstance c(card_id, upgraded);
+                c.uniqueId = static_cast<std::int16_t>(bc.cards.nextUniqueCardId++);
+                (pile == 0 ? bc.cards.drawPile : pile == 1 ? bc.cards.discardPile : bc.cards.exhaustPile).push_back(c);
+            },
+            pybind11::arg("pile"), pybind11::arg("card_id"), pybind11::arg("upgraded") = false,
+            "TEST ONLY: append a card to draw(0)/discard(1)/exhaust(2), bypassing game flow")
+        .def("debug_edit_pile_card",
+            [](BattleContext &bc, int pile, int idx, pybind11::object cost, pybind11::object cost_for_turn,
+               pybind11::object upgraded, pybind11::object special_data) {
+                auto &v = pile == 0 ? bc.cards.drawPile : pile == 1 ? bc.cards.discardPile : bc.cards.exhaustPile;
+                CardInstance &c = v.at(idx);
+                if (!cost.is_none()) c.cost = static_cast<std::int8_t>(cost.cast<int>());
+                if (!cost_for_turn.is_none()) c.costForTurn = static_cast<std::int8_t>(cost_for_turn.cast<int>());
+                if (!upgraded.is_none()) c.upgraded = upgraded.cast<bool>();
+                if (!special_data.is_none()) c.specialData = static_cast<std::int16_t>(special_data.cast<int>());
+            },
+            pybind11::arg("pile"), pybind11::arg("idx"), pybind11::arg("cost") = pybind11::none(),
+            pybind11::arg("cost_for_turn") = pybind11::none(), pybind11::arg("upgraded") = pybind11::none(),
+            pybind11::arg("special_data") = pybind11::none(),
+            "TEST ONLY: overwrite fields of one pile card")
+
         // Use a potion from a potion slot
         .def("drink_potion",
             [](BattleContext &bc, int slot_idx, int target_idx) {
@@ -1695,6 +1728,11 @@ PYBIND11_MODULE(slaythespire, m) {
         // dtypes = combat_featurizer's NamedTuples; int64 = torch.long, float32; C-contiguous), plus
         // "keys": {section: bytes}. draw carries has_frozen_eye (bool) and preview_idx/preview_valid
         // (None unless has_frozen_eye).
+        // C++ key equivalent to CombatState equality (PLAN-perf-cpp-search C.4c): equal bytes <=> the
+        // Python adapter's extract_combat_state would return equal frozen CombatStates.
+        .def("state_key",
+            [](const BattleContext &bc) { return pybind11::bytes(sts::search::stateKey(bc)); },
+            "Exact key for CombatState equality (see include/sim/search/StateKey.h)")
         .def("featurize_sections",
             [](const BattleContext &bc, int num_card_types, int hand_slots, int preview_slots,
                int card_select_slots, int num_monster_slots, int mmid_cap, int era) {
