@@ -5,6 +5,7 @@
 #include "sim/search/PyLegality.h"
 #include "sim/search/Featurize.h"
 #include "sim/search/StateKey.h"
+#include "sim/search/ApplyAction.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -1503,6 +1504,16 @@ PYBIND11_MODULE(slaythespire, m) {
         return d;
     }, "Vocabularies compiled into the C++ featurizer (generated from the Python tables), by name");
 
+    // C.4d: what action conversion reads from the node's cached CombatState (opaque; tuple() for tests)
+    pybind11::class_<sts::search::ConvCtx>(m, "ConvCtx")
+        .def_readonly("potion_target", &sts::search::ConvCtx::potionTarget)
+        .def_readonly("card_select_task", &sts::search::ConvCtx::cardSelectTask)
+        .def_readonly("secret_idx", &sts::search::ConvCtx::secretIdx)
+        .def("as_tuple", [](const sts::search::ConvCtx &c) {
+            return pybind11::make_tuple(c.potionTarget, c.cardSelectTask, c.secretIdx);
+        })
+        .def("__eq__", [](const sts::search::ConvCtx &a, const sts::search::ConvCtx &b) { return a == b; });
+
     pybind11::class_<BattleContext>(m, "BattleContext")
         .def(pybind11::init<>())
 
@@ -1730,6 +1741,29 @@ PYBIND11_MODULE(slaythespire, m) {
         // (None unless has_frozen_eye).
         // C++ key equivalent to CombatState equality (PLAN-perf-cpp-search C.4c): equal bytes <=> the
         // Python adapter's extract_combat_state would return equal frozen CombatStates.
+        // C++ mirror of action_index_to_combat_action + _execute_action + _pump (PLAN-perf-cpp-search C.4d)
+        .def("conv_ctx",
+            [](const BattleContext &bc) { return sts::search::makeConvCtx(bc); },
+            "Capture what action conversion reads from the CombatState extracted from this bc")
+        .def("apply_action_index",
+            [](BattleContext &bc, int idx, const sts::search::ConvCtx &ctx) {
+                int swallowed = 0;
+                sts::search::applyActionIndex(bc, idx, ctx, &swallowed);
+                return swallowed;
+            },
+            pybind11::arg("idx"), pybind11::arg("ctx"),
+            "Convert flat action idx with ctx + execute + pump (mirrors Python); returns # swallowed chooser/resume exceptions")
+        .def("pump", [](BattleContext &bc) { sts::search::pump(bc); }, "Python _pump")
+        // TEST/diff: all six RNG streams (seed0, seed1, counter) + cards_drawn, for exact RNG equality
+        .def("rng_state",
+            [](const BattleContext &bc) {
+                pybind11::list l;
+                for (const sts::Random *r : {&bc.aiRng, &bc.cardRandomRng, &bc.miscRng, &bc.monsterHpRng, &bc.potionRng, &bc.shuffleRng})
+                    l.append(pybind11::make_tuple(r->seed0, r->seed1, r->counter));
+                l.append(bc.cardsDrawn);
+                return pybind11::tuple(l);
+            },
+            "All six RNG streams as (seed0, seed1, counter) + cardsDrawn, for exact-RNG equality checks")
         .def("state_key",
             [](const BattleContext &bc) { return pybind11::bytes(sts::search::stateKey(bc)); },
             "Exact key for CombatState equality (see include/sim/search/StateKey.h)")

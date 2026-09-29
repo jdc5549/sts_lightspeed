@@ -140,6 +140,8 @@ namespace {
 
 }
 
+int search::pyCardType(CardId id) { return static_cast<int>(pyType(id)); }
+
 PyMask76 search::legalMask76(const BattleContext &bc) {
     PyMask76 m{};  // all False
     if (!isNormalOrSelect(bc)) return m;

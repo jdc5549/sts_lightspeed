@@ -21,6 +21,11 @@ namespace sts::search {
     // is_fixed_space_compatible(state).
     bool fixedSpaceCompatible(const BattleContext &bc);
 
+    // CARD_PROPERTIES[card_id].get('type') as the Python enumerator sees it: 1 ATTACK, 2 SKILL, else 0/3/4.
+    int pyCardType(CardId id);
+    constexpr int PY_TYPE_ATTACK = 1;
+    constexpr int PY_TYPE_SKILL = 2;
+
 }
 
 #endif
