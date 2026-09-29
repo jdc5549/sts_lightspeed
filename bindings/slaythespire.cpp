@@ -2013,6 +2013,10 @@ PYBIND11_MODULE(slaythespire, m) {
             "Propagate combat results back to the GameContext after battle ends")
 
         // State query properties
+        // Read-only: True iff the player escaped this combat with a Smoke Bomb (BattleContext::smoked, copied to
+        // GameContext::info.smoked by exit_battle and CLEARED by afterBattle) -- read it BEFORE exit_battle.
+        .def_property_readonly("smoked", [](const BattleContext &bc) { return bc.smoked; },
+            "True iff the fight ended by a Smoke Bomb escape (read before exit_battle)")
         .def_property_readonly("input_state",
             [](const BattleContext &bc) { return bc.inputState; },
             "Current InputState (PLAYER_NORMAL, CARD_SELECT, etc.)")
