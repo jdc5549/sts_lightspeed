@@ -140,7 +140,7 @@ namespace sts::search {
     PuctSearch::Bundle PuctSearch::makeBundle(const BattleContext &bc, bool wantFeatures) const {
         Bundle b;
         b.key = stateKey(bc);
-        b.mask = legalMask76(bc);
+        b.mask = legalMask(bc);
         b.compat = fixedSpaceCompatible(bc);
         b.ctx = makeConvCtx(bc);
         if (wantFeatures && b.compat && nn_.find(b.key) == nn_.end())

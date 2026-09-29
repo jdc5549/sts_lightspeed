@@ -7,6 +7,7 @@
 #include "sim/search/StateKey.h"
 #include "sim/search/ApplyAction.h"
 #include "sim/search/PuctSearch.h"
+#include "sim/search/GameLegality.h"
 #include "sim/search/StateHash.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -1552,6 +1553,15 @@ PYBIND11_MODULE(slaythespire, m) {
             pybind11::arg("card_select_slots"), pybind11::arg("num_monster_slots"), pybind11::arg("mmid_cap"),
             pybind11::arg("era") = 1)
         .def("clear", &sts::search::PuctSearch::clear, "Clear the per-combat nn and extract caches")
+        .def("set_legality_game", &sts::search::PuctSearch::setLegalityGame,
+             "S.3: use the simulator's own legality mask (True) or the Python-enumerator emulation (False); clears caches")
+        .def("legal_mask", [](const sts::search::PuctSearch &ps, const BattleContext &bc) {
+                const auto m = ps.legalMask(bc);
+                pybind11::array_t<bool> out(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+                auto r = out.mutable_unchecked<1>();
+                for (int i = 0; i < sts::search::PY_ACTION_SPACE; ++i) r(i) = m[i];
+                return out;
+             }, "The 76-slot mask THIS search uses (per its legality mode) for a battle context")
         .def("set_mutation", &sts::search::PuctSearch::setMutation, "TEST ONLY: 0 exact; 1..4 = C.4e mutations")
         .def("reset_counters", &sts::search::PuctSearch::resetCounters)
         .def("last_root_w", [](const sts::search::PuctSearch &ps) {
@@ -1735,6 +1745,8 @@ PYBIND11_MODULE(slaythespire, m) {
         for (pybind11::ssize_t i = 0; i < p.size(); ++i) out.mutable_data()[i] = sts::search::noiseMix(p.data()[i], eps, nz.data()[i]);
         return out;
     });
+    m.def("set_game_legality_mutation", &sts::search::setGameLegalityMutation,
+          "TEST ONLY: 0 exact; 1 = legal_mask76_game numbers hand slots by enumeration order instead of hand position");
     m.def("puct_test_select_vl", [](pybind11::array_t<std::int32_t, pybind11::array::c_style> N,
                                     pybind11::array_t<std::int32_t, pybind11::array::c_style> vl,
                                     pybind11::array_t<float, pybind11::array::c_style> W,
@@ -1947,6 +1959,24 @@ PYBIND11_MODULE(slaythespire, m) {
             },
             pybind11::arg("pile"), pybind11::arg("card_id"), pybind11::arg("upgraded") = false,
             "TEST ONLY: append a card to draw(0)/discard(1)/exhaust(2), bypassing game flow")
+        // TEST ONLY (S.3): build legality-disagreement states that no short real game reaches
+        .def("debug_set_energy",
+            [](BattleContext &bc, int energy) { bc.player.energy = energy; },
+            pybind11::arg("energy"), "TEST ONLY: overwrite the player's energy")
+        .def("debug_edit_hand_card",
+            [](BattleContext &bc, int idx, pybind11::object cost, pybind11::object cost_for_turn,
+               pybind11::object free_to_play_once) {
+                CardInstance &c = bc.cards.hand[idx];
+                if (!cost.is_none()) c.cost = static_cast<std::int8_t>(cost.cast<int>());
+                if (!cost_for_turn.is_none()) c.costForTurn = static_cast<std::int8_t>(cost_for_turn.cast<int>());
+                if (!free_to_play_once.is_none()) c.freeToPlayOnce = free_to_play_once.cast<bool>();
+            },
+            pybind11::arg("idx"), pybind11::arg("cost") = pybind11::none(),
+            pybind11::arg("cost_for_turn") = pybind11::none(), pybind11::arg("free_to_play_once") = pybind11::none(),
+            "TEST ONLY: overwrite cost / costForTurn / freeToPlayOnce of one hand card")
+        .def("debug_clear_hand",
+            [](BattleContext &bc) { while (bc.cards.cardsInHand > 0) bc.cards.removeFromHandAtIdx(0); },
+            "TEST ONLY: empty the hand")
         .def("debug_edit_pile_card",
             [](BattleContext &bc, int pile, int idx, pybind11::object cost, pybind11::object cost_for_turn,
                pybind11::object upgraded, pybind11::object special_data) {
@@ -1996,6 +2026,16 @@ PYBIND11_MODULE(slaythespire, m) {
                 return out;
             },
             "76-slot legal-action mask (bool ndarray) emulating the Python enumerator exactly")
+        // The simulator's own legality over the same 76 slots (PLAN-perf-cpp-search S.3, legality="game")
+        .def("legal_mask76_game",
+            [](const BattleContext &bc) {
+                const auto m = sts::search::legalMask76Game(bc);
+                pybind11::array_t<bool> out(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+                auto r = out.mutable_unchecked<1>();
+                for (int i = 0; i < sts::search::PY_ACTION_SPACE; ++i) r(i) = m[i];
+                return out;
+            },
+            "76-slot legal-action mask from the simulator's own rules (canUse / potion / card-select options)")
         // C++ emulation of the Python leaf featurization (PLAN-perf-cpp-search C.3): per-section
         // arrays + per-section exact keys (raw feature bytes). Shape: {section: {field: ndarray}} for
         // section in scalars/hand/draw/discard/exhaust/card_select/stasis/monster (field names and

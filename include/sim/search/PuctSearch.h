@@ -28,6 +28,7 @@
 #include "combat/BattleContext.h"
 #include "sim/search/ApplyAction.h"
 #include "sim/search/Featurize.h"
+#include "sim/search/GameLegality.h"
 #include "sim/search/PyLegality.h"
 
 namespace sts::search {
@@ -94,6 +95,12 @@ namespace sts::search {
 
         // Per-combat caches (MCTSMicroAgent.set_bc clears both Python caches).
         void clear();
+        // S.3: which 76-slot mask the tree uses at every node (root included): the Python-enumerator emulation
+        // (default) or the simulator's own legality (legalMask76Game). Switching clears the per-combat caches
+        // (their entries carry the mask of the mode that produced them).
+        void setLegalityGame(bool game) { if (game != legalityGame_) { legalityGame_ = game; clear(); } }
+        bool legalityGame() const { return legalityGame_; }
+        PyMask76 legalMask(const BattleContext &bc) const { return legalityGame_ ? legalMask76Game(bc) : legalMask76(bc); }
         const FeaturizerConfig &config() const { return cfg_; }
 
         // ONE determinization: bcK = clone_with_fresh_rng(realBc, seed, reshuffle), then nSims sims.
@@ -217,6 +224,7 @@ namespace sts::search {
         std::vector<std::array<float, PY_ACTION_SPACE>> lastRootWs_;
         std::vector<std::vector<LockstepLogEntry>> lockstepLog_;
         bool recordLog_ = false;
+        bool legalityGame_ = false;
         bool debugChecks_ = false;
         long long vlInflight_ = 0;
         int mutation_ = 0;
