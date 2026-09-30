@@ -10,6 +10,10 @@ file (GLOB_RECURSE sts_lightspeed_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_FLAGS  "-Wno-shift-count-overflow -O3")
 
+# PLAN-cpp-inference decision 4: the C++ forward's numerics are pinned -- strict FP, no contraction (no FMA
+# fusing a*b+c into one rounding), no fast-math; its dot products keep a fixed summation order in the source.
+set_source_files_properties(src/sim/search/Forward.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-fno-fast-math")
+
 add_subdirectory(json)
 add_subdirectory(pybind11)
 

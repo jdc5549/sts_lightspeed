@@ -28,6 +28,7 @@
 #include "combat/BattleContext.h"
 #include "sim/search/ApplyAction.h"
 #include "sim/search/Featurize.h"
+#include "sim/search/Forward.h"
 #include "sim/search/GameLegality.h"
 #include "sim/search/PyLegality.h"
 
@@ -91,7 +92,12 @@ namespace sts::search {
 
     class PuctSearch {
     public:
-        explicit PuctSearch(const FeaturizerConfig &cfg) : cfg_(cfg) {}
+        explicit PuctSearch(const FeaturizerConfig &cfg) : cfg_(cfg), fwd_(std::make_unique<ForwardNet>(cfg)) {}
+
+        // PLAN-cpp-inference B.1/B.2: the C++ leaf forward's weights (see Forward.h). NOT yet used by
+        // runTree/runTreesLockstep (B.4); debugForward is the diagnostic entry.
+        ForwardNet &forwardNet() { return *fwd_; }
+        ForwardOutput debugForward(const BattleContext &bc, const PyMask76 &mask);
 
         // Per-combat caches (MCTSMicroAgent.set_bc clears both Python caches).
         void clear();
@@ -217,6 +223,7 @@ namespace sts::search {
         static double terminalValue(const BattleContext &bc, TerminalMode mode);
 
         FeaturizerConfig cfg_;
+        std::unique_ptr<ForwardNet> fwd_;
         std::unordered_map<std::string, NNEntry> nn_;
         std::unordered_map<std::uint64_t, Bundle> extract_;
         SearchCounters counters_;

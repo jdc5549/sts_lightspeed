@@ -132,6 +132,11 @@ namespace sts::search {
         }
     }
 
+    ForwardOutput PuctSearch::debugForward(const BattleContext &bc, const PyMask76 &mask) {
+        const Features f = featurize(bc, cfg_);
+        return fwd_->forward(f, mask);
+    }
+
     void PuctSearch::clear() {
         nn_.clear();
         extract_.clear();

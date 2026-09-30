@@ -1563,6 +1563,38 @@ PYBIND11_MODULE(slaythespire, m) {
                 return out;
              }, "The 76-slot mask THIS search uses (per its legality mode) for a battle context")
         .def("set_mutation", &sts::search::PuctSearch::setMutation, "TEST ONLY: 0 exact; 1..4 = C.4e mutations")
+        .def("begin_weights", [](sts::search::PuctSearch &ps, int era) { ps.forwardNet().beginWeights(era); },
+             pybind11::arg("era"),
+             "PLAN-cpp-inference B.1: start a C++-forward weight load; raises if era != the featurizer's era")
+        .def("load_weight", [](sts::search::PuctSearch &ps, const std::string &name,
+                               pybind11::array_t<float, pybind11::array::c_style | pybind11::array::forcecast> arr) {
+            std::vector<std::int64_t> shape(arr.shape(), arr.shape() + arr.ndim());
+            ps.forwardNet().loadWeight(name, shape, arr.data(), std::size_t(arr.size()));
+        }, pybind11::arg("name"), pybind11::arg("array"),
+             "Load one named state_dict tensor (float32); raises on an unknown name / bad shape / duplicate")
+        .def("finalize_weights", [](sts::search::PuctSearch &ps) { ps.forwardNet().finalize(); },
+             "Raises listing every missing weight name, then checks every cross-tensor dimension")
+        .def("weights_digest", [](const sts::search::PuctSearch &ps) {
+            return const_cast<sts::search::PuctSearch &>(ps).forwardNet().weightsDigest(); },
+             "SHA-256 hex over the loaded float bytes in load order")
+        .def_static("forward_weight_names", []() { return sts::search::ForwardNet::fixedNames(); },
+             "The fixed (non-head) tensor names the C++ forward consumes")
+        .def("debug_forward", [](sts::search::PuctSearch &ps, const BattleContext &bc,
+                                 pybind11::object mask_override) {
+            sts::search::PyMask76 mask = ps.legalMask(bc);
+            if (!mask_override.is_none()) {
+                auto m = pybind11::cast<pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast>>(mask_override);
+                if (m.size() != sts::search::PY_ACTION_SPACE) throw std::runtime_error("debug_forward: mask must have 76 entries");
+                for (int a = 0; a < sts::search::PY_ACTION_SPACE; ++a) mask[a] = m.data()[a];
+            }
+            const sts::search::ForwardOutput o = ps.debugForward(bc, mask);
+            pybind11::array_t<float> lg(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            pybind11::array_t<float> pp(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            std::memcpy(lg.mutable_data(), o.logits.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            std::memcpy(pp.mutable_data(), o.P.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            return pybind11::make_tuple(lg, pp, double(o.value));
+        }, pybind11::arg("bc"), pybind11::arg("mask") = pybind11::none(),
+           "TEST/diagnostic: featurize bc, run the C++ forward under the search's legality mask (or `mask`, bool[76]) -> (masked logits[76], P[76], value)")
         .def("reset_counters", &sts::search::PuctSearch::resetCounters)
         .def("last_root_w", [](const sts::search::PuctSearch &ps) {
             pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
