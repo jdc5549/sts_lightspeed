@@ -46,7 +46,27 @@ namespace sts::search {
         std::string weightsDigest() const;
 
         // Requires finalize(). Scratch buffers are members: one thread per ForwardNet.
+        // forward == for each section s in fusion order: encodeSection(s) into the fuse buffer; fuseAndHeads.
         ForwardOutput forward(const Features &f, const PyMask76 &mask);
+
+        // ---- stages (PLAN-cpp-inference B.3 memo / M.2). Bit-identical to the monolithic forward by construction:
+        // forward() IS their composition. Section outputs are laid out in the fuse buffer in fusion order.
+        int sectionWidth(FeatSection s) const;       // output floats of one section
+        int sectionOffset(FeatSection s) const;      // its offset in the fuse buffer
+        int fuseWidth() const { return int(s_fuse_.size()); }
+        void checkFeatures(const Features &f) const; // shape validation forward() does first
+        // One memoizable section: scalars, hand, draw (mean + Frozen-Eye preview), discard, exhaust (the SAME pile
+        // encoder), monsters (all five slot tokens; the seq-context is internal), card_select, stasis.
+        void encodeSection(FeatSection s, const Features &f, float *out);
+        // fuse: fuseWidth() floats (sections concatenated). fusion+LayerNorm+ReLU, both heads, post-processing.
+        ForwardOutput fuseAndHeads(const float *fuse, const PyMask76 &mask);
+        void fusionStage(const float *fuse, float *nm);                                   // nm: fuseOut floats
+        void headsStage(const float *nm, std::vector<float> &logits, std::vector<float> &value);
+        static ForwardOutput postProcess(const float *logits, float value, const PyMask76 &mask);
+        // Layer-by-layer across rows (each weight row loaded once per batch). Row r is BIT-IDENTICAL to
+        // forward(*fs[r], *masks[r]) whatever the batch size or r's slot (same per-output operation order).
+        std::vector<ForwardOutput> forwardBatch(const std::vector<const Features *> &fs,
+                                                const std::vector<const PyMask76 *> &masks);
 
         // The canonical (non-aliased) tensor names the net consumes, fixed part only (heads are pattern-named).
         static std::vector<std::string> fixedNames();
@@ -61,6 +81,16 @@ namespace sts::search {
         LN makeLN(const std::string &base) const;
         std::vector<Lin> makeHead(const std::string &prefix) const;
         static void linear(const Lin &l, const float *x, float *y);
+        static void linearB(const Lin &l, const float *const *xs, float *const *ys, int n);   // n rows, see forwardBatch
+        void encScalars(const Features &f, float *out);
+        void encHand(const Features &f, float *out);
+        void encDraw(const Features &f, float *out);
+        void encPile(const std::vector<std::int64_t> &idx, float *out, const char *what);
+        void encMonsters(const Features &f, float *out);
+        void encSelect(const Features &f, float *out);
+        void encStasis(const Features &f, float *out);
+        void monsterInput(const Features &f, int s, float *p) const;
+        void monsterTokenInput(const Features &f, int s, const float *ctx, float *q) const;
         static void layerNorm(const LN &l, float *x);
         static void relu(float *x, int n);
         static const float *row(const std::vector<float> &t, int rows, int dim, std::int64_t idx, const char *what);

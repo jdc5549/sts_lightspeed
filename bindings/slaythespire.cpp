@@ -17,6 +17,7 @@
 
 #include <sstream>
 #include <cstring>
+#include <chrono>
 #include <algorithm>
 
 #include "sim/ConsoleSimulator.h"
@@ -70,6 +71,115 @@ pybind11::dict featuresToPy(const sts::search::Features &f, const sts::search::F
     out["keys"] = keys;
     return out;
 }
+}  // namespace
+
+
+// PLAN-cpp-inference M.2: times the REAL ForwardNet (Forward.cpp, the same object the search uses) on precomputed
+// Features. featurize/legality are outside every timed region. Single thread; the caller pins the CPU.
+namespace {
+struct ForwardBench {
+    sts::search::PuctSearch *ps;
+    std::vector<sts::search::Features> feats;
+    std::vector<sts::search::PyMask76> masks;
+    explicit ForwardBench(sts::search::PuctSearch &search) : ps(&search) {}
+    void addBc(const BattleContext &bc) {
+        feats.push_back(sts::search::featurize(bc, ps->config()));
+        masks.push_back(ps->legalMask(bc));
+    }
+    // A leaf exactly as the search's Python callback receives it: the `featuresToPy` dict + the bool[76] mask.
+    void addSections(const pybind11::dict &d, const pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast> &mask) {
+        namespace py = pybind11;
+        using F32 = py::array_t<float, py::array::c_style | py::array::forcecast>;
+        using I64 = py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>;
+        auto sec = [&](const char *a) { return py::cast<py::dict>(d[a]); };
+        auto f32 = [](const py::object &o) { F32 a = py::cast<F32>(o); return std::vector<float>(a.data(), a.data() + a.size()); };
+        auto i64 = [](const py::object &o) { I64 a = py::cast<I64>(o); return std::vector<std::int64_t>(a.data(), a.data() + a.size()); };
+        sts::search::Features f;
+        f.scalars = f32(sec("scalars")["scalars"]);
+        f.handIdx = i64(sec("hand")["idx"]); f.handValid = f32(sec("hand")["valid"]); f.handScalars = f32(sec("hand")["scalars"]);
+        f.drawIdx = i64(sec("draw")["idx"]);
+        f.hasFrozenEye = py::cast<bool>(sec("draw")["has_frozen_eye"]);
+        if (f.hasFrozenEye) { f.previewIdx = i64(sec("draw")["preview_idx"]); f.previewValid = f32(sec("draw")["preview_valid"]); }
+        f.discardIdx = i64(sec("discard")["idx"]); f.exhaustIdx = i64(sec("exhaust")["idx"]);
+        f.selectIdx = i64(sec("card_select")["idx"]); f.selectValid = f32(sec("card_select")["valid"]);
+        f.stasisIdx = i64(sec("stasis")["idx"]); f.stasisValid = f32(sec("stasis")["valid"]);
+        const py::dict m = sec("monster");
+        f.monCurr = i64(m["curr"]); f.monH0 = i64(m["h0"]); f.monH1 = i64(m["h1"]); f.monMid = i64(m["mid"]);
+        f.monTurnCol = f32(m["turn_col"]); f.monStatuses = f32(m["statuses"]); f.monScalars = f32(m["scalars"]);
+        if (mask.size() != sts::search::PY_ACTION_SPACE) throw std::runtime_error("addSections: mask must have 76 entries");
+        sts::search::PyMask76 mk;
+        for (int a = 0; a < sts::search::PY_ACTION_SPACE; ++a) mk[a] = mask.data()[a];
+        feats.push_back(std::move(f)); masks.push_back(mk);
+    }
+    static double usSince(std::chrono::steady_clock::time_point t0) {
+        return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    }
+    // One pass over floor(n/B)*B states in groups of B (B=0 -> single-row forward()). Returns us/state.
+    double pass(int B) {
+        auto &net = ps->forwardNet();
+        const int n = int(feats.size());
+        volatile float sink = 0.f;
+        if (B == 0) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < n; ++i) sink = sink + net.forward(feats[i], masks[i]).value;
+            return usSince(t0) / n;
+        }
+        const int groups = n / B;
+        std::vector<const sts::search::Features *> fs(B);
+        std::vector<const sts::search::PyMask76 *> ms(B);
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int g = 0; g < groups; ++g) {
+            for (int b = 0; b < B; ++b) { fs[b] = &feats[g * B + b]; ms[b] = &masks[g * B + b]; }
+            const auto out = net.forwardBatch(fs, ms);
+            sink = sink + out[0].value;
+        }
+        return usSince(t0) / (double(groups) * B);
+    }
+    // us/state for `passes` passes at batch B (B=0: single forward); the first call also warms caches.
+    pybind11::list timeBatch(int B, int passes) {
+        pybind11::list r;
+        for (int i = 0; i < passes; ++i) r.append(pass(B));
+        return r;
+    }
+    // Per-stage us/state at B=1, one timed pass per stage over all states (each stage's input prepared untimed... no:
+    // stages are timed inline with a chrono read around each call, so the clock overhead (~20 ns x 12) is in the sum).
+    pybind11::dict stages(int passes) {
+        using FS = sts::search::FeatSection;
+        auto &net = ps->forwardNet();
+        const int n = int(feats.size());
+        const FS order[] = {FS::Scalars, FS::Hand, FS::Draw, FS::Discard, FS::Exhaust, FS::Monster, FS::CardSelect, FS::Stasis};
+        const char *names[] = {"scalars", "hand", "draw", "discard", "exhaust", "monsters", "card_select", "stasis"};
+        double acc[8] = {0}, fusion = 0, heads = 0, post = 0, total = 0;
+        std::vector<float> fuse(net.fuseWidth()), nm(4096);
+        for (int pss = 0; pss < passes; ++pss)
+            for (int i = 0; i < n; ++i) {
+                const auto T0 = std::chrono::steady_clock::now();
+                for (int k = 0; k < 8; ++k) {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    net.encodeSection(order[k], feats[i], fuse.data() + net.sectionOffset(order[k]));
+                    acc[k] += usSince(t0);
+                }
+                auto t0 = std::chrono::steady_clock::now();
+                if (nm.size() < size_t(net.fuseWidth())) nm.resize(net.fuseWidth());
+                net.fusionStage(fuse.data(), nm.data());
+                fusion += usSince(t0);
+                t0 = std::chrono::steady_clock::now();
+                std::vector<float> lg, vl;
+                net.headsStage(nm.data(), lg, vl);
+                heads += usSince(t0);
+                t0 = std::chrono::steady_clock::now();
+                const auto o = sts::search::ForwardNet::postProcess(lg.data(), vl[0], masks[i]);
+                post += usSince(t0);
+                (void)o;
+                total += usSince(T0);
+            }
+        const double k = double(passes) * n;
+        pybind11::dict d;
+        for (int j = 0; j < 8; ++j) d[names[j]] = acc[j] / k;
+        d["fusion"] = fusion / k; d["heads"] = heads / k; d["postprocess"] = post / k; d["total_staged"] = total / k;
+        return d;
+    }
+};
 }  // namespace
 
 PYBIND11_MODULE(slaythespire, m) {
@@ -1541,6 +1651,18 @@ PYBIND11_MODULE(slaythespire, m) {
     }, "Field-name lists the C++ state key serialises (generated from the CombatState dataclasses)");
 
     // C.4e: the C++ PUCT tree (exact stage; see include/sim/search/PuctSearch.h)
+    pybind11::class_<ForwardBench>(m, "ForwardBench")
+        .def(pybind11::init<sts::search::PuctSearch &>(), pybind11::keep_alive<1, 2>(), pybind11::arg("search"),
+             "PLAN-cpp-inference M.2: precompute features (untimed) with add_bc/add_sections, then time ForwardNet")
+        .def("add_bc", &ForwardBench::addBc, pybind11::arg("bc"))
+        .def("add_sections", &ForwardBench::addSections, pybind11::arg("sections"), pybind11::arg("mask"),
+             "a leaf as the search's Python callback receives it (featuresToPy dict + bool[76])")
+        .def("time_batch", &ForwardBench::timeBatch, pybind11::arg("B"), pybind11::arg("passes"),
+             "us/state for each of `passes` passes at batch size B (B=0: single-row forward())")
+        .def("stages", &ForwardBench::stages, pybind11::arg("passes"),
+             "per-stage us/state at B=1 (section encoders, fusion, heads, postprocess)")
+        .def("n", [](const ForwardBench &b) { return b.feats.size(); });
+
     pybind11::class_<sts::search::PuctSearch>(m, "PuctSearch")
         .def(pybind11::init([](int num_card_types, int hand_slots, int preview_slots, int card_select_slots,
                                int num_monster_slots, int mmid_cap, int era) {
@@ -1595,6 +1717,34 @@ PYBIND11_MODULE(slaythespire, m) {
             return pybind11::make_tuple(lg, pp, double(o.value));
         }, pybind11::arg("bc"), pybind11::arg("mask") = pybind11::none(),
            "TEST/diagnostic: featurize bc, run the C++ forward under the search's legality mask (or `mask`, bool[76]) -> (masked logits[76], P[76], value)")
+        .def("debug_forward_batch", [](sts::search::PuctSearch &ps, const std::vector<const BattleContext *> &bcs,
+                                       pybind11::object masks_override) {
+            std::vector<sts::search::Features> feats;
+            std::vector<sts::search::PyMask76> masks(bcs.size());
+            for (std::size_t i = 0; i < bcs.size(); ++i) {
+                feats.push_back(sts::search::featurize(*bcs[i], ps.config()));
+                masks[i] = ps.legalMask(*bcs[i]);
+            }
+            if (!masks_override.is_none()) {
+                auto m = pybind11::cast<pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast>>(masks_override);
+                if (m.ndim() != 2 || m.shape(0) != pybind11::ssize_t(bcs.size()) || m.shape(1) != sts::search::PY_ACTION_SPACE)
+                    throw std::runtime_error("debug_forward_batch: masks must be bool[len(bcs), 76]");
+                for (std::size_t i = 0; i < bcs.size(); ++i)
+                    for (int a = 0; a < sts::search::PY_ACTION_SPACE; ++a) masks[i][a] = m.data()[i * sts::search::PY_ACTION_SPACE + a];
+            }
+            std::vector<const sts::search::Features *> fp; std::vector<const sts::search::PyMask76 *> mp;
+            for (std::size_t i = 0; i < bcs.size(); ++i) { fp.push_back(&feats[i]); mp.push_back(&masks[i]); }
+            const auto outs = ps.forwardNet().forwardBatch(fp, mp);
+            const pybind11::ssize_t n = outs.size(), A = sts::search::PY_ACTION_SPACE;
+            pybind11::array_t<float> lg(std::vector<pybind11::ssize_t>{n, A}), pp(std::vector<pybind11::ssize_t>{n, A}), vv(std::vector<pybind11::ssize_t>{n});
+            for (pybind11::ssize_t i = 0; i < n; ++i) {
+                std::memcpy(lg.mutable_data() + i * A, outs[i].logits.data(), sizeof(float) * A);
+                std::memcpy(pp.mutable_data() + i * A, outs[i].P.data(), sizeof(float) * A);
+                vv.mutable_data()[i] = outs[i].value;
+            }
+            return pybind11::make_tuple(lg, pp, vv);
+        }, pybind11::arg("bcs"), pybind11::arg("masks") = pybind11::none(),
+           "TEST/diagnostic: ForwardNet::forwardBatch over the batch -> (logits[n,76], P[n,76], value[n]) float32")
         .def("reset_counters", &sts::search::PuctSearch::resetCounters)
         .def("last_root_w", [](const sts::search::PuctSearch &ps) {
             pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});

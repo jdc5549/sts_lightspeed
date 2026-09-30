@@ -354,7 +354,9 @@ const float *ForwardNet::row(const std::vector<float> &t, int rows, int dim, std
     return t.data() + std::size_t(idx) * dim;
 }
 
-ForwardOutput ForwardNet::forward(const Features &f, const PyMask76 &mask) {
+
+// ---- feature-shape validation (shared by forward and forwardBatch) -------------------------------------------------
+void ForwardNet::checkFeatures(const Features &f) const {
     if (!finalized_) fail("forward() before finalize()");
     const int H = cfg_.handSlots, P = cfg_.previewSlots, C = cfg_.cardSelectSlots, S = cfg_.monsterSlots;
     auto sz = [&](std::size_t got, std::size_t want, const char *what) {
@@ -370,116 +372,165 @@ ForwardOutput ForwardNet::forward(const Features &f, const PyMask76 &mask) {
     sz(f.monTurnCol.size(), std::size_t(S), "monTurnCol"); sz(f.monStatuses.size(), std::size_t(S) * 42, "monStatuses");
     sz(f.monScalars.size(), std::size_t(S) * 8, "monScalars");
     if (f.hasFrozenEye) { sz(f.previewIdx.size(), std::size_t(P), "previewIdx"); sz(f.previewValid.size(), std::size_t(P), "previewValid"); }
+}
 
-    float *fuse = s_fuse_.data();
+// ---- section layout (fusion order: scalars, hand, draw, discard, exhaust, monsters, card_select, stasis) ---------
+int ForwardNet::sectionWidth(FeatSection s) const {
+    switch (s) {
+        case FeatSection::Scalars: return scalarOut_;
+        case FeatSection::Hand: return handOut_;
+        case FeatSection::Draw: return d_ + prevOut_;
+        case FeatSection::Discard: case FeatSection::Exhaust: return d_;
+        case FeatSection::Monster: return cfg_.monsterSlots * monTok_;
+        case FeatSection::CardSelect: return selOut_;
+        case FeatSection::Stasis: return stasOut_;
+    }
+    fail("sectionWidth: bad section");
+}
+
+int ForwardNet::sectionOffset(FeatSection s) const {
     int off = 0;
+    for (FeatSection t : {FeatSection::Scalars, FeatSection::Hand, FeatSection::Draw, FeatSection::Discard,
+                          FeatSection::Exhaust, FeatSection::Monster, FeatSection::CardSelect, FeatSection::Stasis}) {
+        if (t == s) return off;
+        off += sectionWidth(t);
+    }
+    fail("sectionOffset: bad section");
+}
 
-    // ---- scalar: Linear, LN, ReLU, Linear, LN, ReLU ----
-    {
-        s_a_.resize(sc0_.out);
-        linear(sc0_, f.scalars.data(), s_a_.data()); layerNorm(sc1_, s_a_.data()); relu(s_a_.data(), sc0_.out);
-        linear(sc2lin_, s_a_.data(), fuse + off); layerNorm(sc4_, fuse + off); relu(fuse + off, scalarOut_);
-        off += scalarOut_;
+// ---- single-row section encoders ---------------------------------------------------------------------------------
+// scalar: Linear, LN, ReLU, Linear, LN, ReLU
+void ForwardNet::encScalars(const Features &f, float *out) {
+    s_a_.resize(sc0_.out);
+    linear(sc0_, f.scalars.data(), s_a_.data()); layerNorm(sc1_, s_a_.data()); relu(s_a_.data(), sc0_.out);
+    linear(sc2lin_, s_a_.data(), out); layerNorm(sc4_, out); relu(out, scalarOut_);
+}
+
+// hand: per slot token = ReLU(Linear([emb*valid, scalars3])); concat; Linear, LN, ReLU
+void ForwardNet::encHand(const Features &f, float *out) {
+    const int H = cfg_.handSlots;
+    s_a_.assign(std::size_t(H) * handTok_, 0.f);
+    s_b_.resize(d_ + 3);
+    for (int s = 0; s < H; ++s) {
+        const float *e = row(emb_, embRows_, d_, f.handIdx[s], "hand card");
+        const float v = f.handValid[s];
+        for (int k = 0; k < d_; ++k) s_b_[k] = e[k] * v;
+        for (int k = 0; k < 3; ++k) s_b_[d_ + k] = f.handScalars[std::size_t(s) * 3 + k];
+        float *tok = s_a_.data() + std::size_t(s) * handTok_;
+        linear(handCard_, s_b_.data(), tok); relu(tok, handTok_);
     }
-    // ---- hand: per slot token = ReLU(Linear([emb*valid, scalars3])); concat; Linear, LN, ReLU ----
-    {
-        s_a_.assign(std::size_t(H) * handTok_, 0.f);
-        s_b_.resize(d_ + 3);
-        for (int s = 0; s < H; ++s) {
-            const float *e = row(emb_, embRows_, d_, f.handIdx[s], "hand card");
-            const float v = f.handValid[s];
-            for (int k = 0; k < d_; ++k) s_b_[k] = e[k] * v;
-            for (int k = 0; k < 3; ++k) s_b_[d_ + k] = f.handScalars[std::size_t(s) * 3 + k];
-            float *tok = s_a_.data() + std::size_t(s) * handTok_;
-            linear(handCard_, s_b_.data(), tok); relu(tok, handTok_);
-        }
-        linear(handAgg_, s_a_.data(), fuse + off); layerNorm(handLN_, fuse + off); relu(fuse + off, handOut_);
-        off += handOut_;
+    linear(handAgg_, s_a_.data(), out); layerNorm(handLN_, out); relu(out, handOut_);
+}
+
+// mean-pool of a pile's live cards (float32 sequential sum / N); empty pile -> zeros. Discard and exhaust are this
+// same encoder; `what` only names the pile in an out-of-range error.
+void ForwardNet::encPile(const std::vector<std::int64_t> &idx, float *out, const char *what) {
+    for (int k = 0; k < d_; ++k) out[k] = 0.f;
+    if (idx.empty()) return;
+    for (std::int64_t id : idx) {
+        const float *e = row(emb_, embRows_, d_, id, what);
+        for (int k = 0; k < d_; ++k) out[k] += e[k];
     }
-    // mean-pool of a pile's live cards (float32 sequential sum / N); empty pile -> zeros.
-    auto pileMean = [&](const std::vector<std::int64_t> &idx, float *out, const char *what) {
-        for (int k = 0; k < d_; ++k) out[k] = 0.f;
-        if (idx.empty()) return;
-        for (std::int64_t id : idx) {
-            const float *e = row(emb_, embRows_, d_, id, what);
-            for (int k = 0; k < d_; ++k) out[k] += e[k];
-        }
-        const float n = float(idx.size());
-        for (int k = 0; k < d_; ++k) out[k] /= n;
-    };
-    // ---- draw: [mean(d), gate * ReLU(Linear(flatten(preview emb * valid)))] (zeros without Frozen Eye) ----
-    {
-        pileMean(f.drawIdx, fuse + off, "draw card");
-        float *pv = fuse + off + d_;
-        if (f.hasFrozenEye) {
-            s_a_.resize(std::size_t(P) * d_);
-            for (int s = 0; s < P; ++s) {
-                const float *e = row(emb_, embRows_, d_, f.previewIdx[s], "preview card");
-                const float v = f.previewValid[s];
-                for (int k = 0; k < d_; ++k) s_a_[std::size_t(s) * d_ + k] = e[k] * v;
-            }
-            linear(prev_, s_a_.data(), pv); relu(pv, prevOut_);
-            for (int k = 0; k < prevOut_; ++k) pv[k] = previewGate_ * pv[k];
-        } else {
-            for (int k = 0; k < prevOut_; ++k) pv[k] = 0.f;
-        }
-        off += d_ + prevOut_;
-    }
-    // ---- discard, exhaust ----
-    pileMean(f.discardIdx, fuse + off, "discard card"); off += d_;
-    pileMean(f.exhaustIdx, fuse + off, "exhaust card"); off += d_;
-    // ---- monsters (fusion order: between exhaust and card_select) ----
-    {
-        s_a_.resize(seq0_.in); s_b_.resize(seq0_.out); s_c_.resize(seqCtx_); s_d_.resize(mon_.in);
-        for (int s = 0; s < S; ++s) {
-            float *p = s_a_.data();
-            for (std::int64_t id : {f.monCurr[s], f.monH0[s], f.monH1[s]}) {
-                const float *e = row(mmidEmb_, cfg_.mmidCap, mmidD_, id, "monster move id");
-                for (int k = 0; k < mmidD_; ++k) *p++ = e[k];
-            }
-            const float *me = row(midEmb_, midRows_, midD_, f.monMid[s], "monster id");
-            for (int k = 0; k < midD_; ++k) *p++ = me[k];
-            *p = f.monTurnCol[s];
-            linear(seq0_, s_a_.data(), s_b_.data()); relu(s_b_.data(), seq0_.out);
-            linear(seq2_, s_b_.data(), s_c_.data()); relu(s_c_.data(), seqCtx_);
-            float *q = s_d_.data();
-            for (int k = 0; k < seqCtx_; ++k) *q++ = s_c_[k];
-            const float *sc = f.monScalars.data() + std::size_t(s) * 8;
-            for (int k = 0; k < 5; ++k) *q++ = sc[k];                       // scalars[:3] then scalars[3:5]
-            const float *st = f.monStatuses.data() + std::size_t(s) * 42;
-            for (int k = 0; k < 42; ++k) *q++ = st[k];
-            for (int k = 5; k < 8; ++k) *q++ = sc[k];                       // scalars[5:]
-            float *tok = fuse + off + std::size_t(s) * monTok_;
-            linear(mon_, s_d_.data(), tok); layerNorm(monLN_, tok); relu(tok, monTok_);
-        }
-        off += S * monTok_;
-    }
-    // ---- card select, stasis ----
-    {
-        s_a_.resize(std::size_t(C) * d_);
-        for (int s = 0; s < C; ++s) {
-            const float *e = row(emb_, embRows_, d_, f.selectIdx[s], "card-select card");
-            const float v = f.selectValid[s];
+    const float n = float(idx.size());
+    for (int k = 0; k < d_; ++k) out[k] /= n;
+}
+
+// draw: [mean(d), gate * ReLU(Linear(flatten(preview emb * valid)))] (zeros without Frozen Eye)
+void ForwardNet::encDraw(const Features &f, float *out) {
+    const int P = cfg_.previewSlots;
+    encPile(f.drawIdx, out, "draw card");
+    float *pv = out + d_;
+    if (f.hasFrozenEye) {
+        s_a_.resize(std::size_t(P) * d_);
+        for (int s = 0; s < P; ++s) {
+            const float *e = row(emb_, embRows_, d_, f.previewIdx[s], "preview card");
+            const float v = f.previewValid[s];
             for (int k = 0; k < d_; ++k) s_a_[std::size_t(s) * d_ + k] = e[k] * v;
         }
-        linear(sel_, s_a_.data(), fuse + off); relu(fuse + off, selOut_); off += selOut_;
-        s_a_.resize(std::size_t(2) * d_);
-        for (int s = 0; s < 2; ++s) {
-            const float *e = row(emb_, embRows_, d_, f.stasisIdx[s], "stasis card");
-            const float v = f.stasisValid[s];
-            for (int k = 0; k < d_; ++k) s_a_[std::size_t(s) * d_ + k] = e[k] * v;
-        }
-        linear(stas_, s_a_.data(), fuse + off); relu(fuse + off, stasOut_); off += stasOut_;
+        linear(prev_, s_a_.data(), pv); relu(pv, prevOut_);
+        for (int k = 0; k < prevOut_; ++k) pv[k] = previewGate_ * pv[k];
+    } else {
+        for (int k = 0; k < prevOut_; ++k) pv[k] = 0.f;
     }
-    if (off != int(s_fuse_.size())) fail("internal: fused width " + std::to_string(off) + " != " + std::to_string(s_fuse_.size()));
+}
 
-    // ---- fusion ----
-    s_nm_.resize(fuseOut_);
-    linear(fus_, fuse, s_nm_.data()); layerNorm(fusLN_, s_nm_.data()); relu(s_nm_.data(), fuseOut_);
+void ForwardNet::encMonsters(const Features &f, float *out) {
+    const int S = cfg_.monsterSlots;
+    s_a_.resize(seq0_.in); s_b_.resize(seq0_.out); s_c_.resize(seqCtx_); s_d_.resize(mon_.in);
+    for (int s = 0; s < S; ++s) {
+        monsterInput(f, s, s_a_.data());
+        linear(seq0_, s_a_.data(), s_b_.data()); relu(s_b_.data(), seq0_.out);
+        linear(seq2_, s_b_.data(), s_c_.data()); relu(s_c_.data(), seqCtx_);
+        monsterTokenInput(f, s, s_c_.data(), s_d_.data());
+        float *tok = out + std::size_t(s) * monTok_;
+        linear(mon_, s_d_.data(), tok); layerNorm(monLN_, tok); relu(tok, monTok_);
+    }
+}
 
-    // ---- heads ----
+// seq_mlp input: [mmid(curr), mmid(h0), mmid(h1), monster_id emb, turn col]
+void ForwardNet::monsterInput(const Features &f, int s, float *p) const {
+    for (std::int64_t id : {f.monCurr[s], f.monH0[s], f.monH1[s]}) {
+        const float *e = row(mmidEmb_, cfg_.mmidCap, mmidD_, id, "monster move id");
+        for (int k = 0; k < mmidD_; ++k) *p++ = e[k];
+    }
+    const float *me = row(midEmb_, midRows_, midD_, f.monMid[s], "monster id");
+    for (int k = 0; k < midD_; ++k) *p++ = me[k];
+    *p = f.monTurnCol[s];
+}
+
+// monster_mlp input: [seq_context, scalars[:3], scalars[3:5], statuses(42), scalars[5:]]
+void ForwardNet::monsterTokenInput(const Features &f, int s, const float *ctx, float *q) const {
+    for (int k = 0; k < seqCtx_; ++k) *q++ = ctx[k];
+    const float *sc = f.monScalars.data() + std::size_t(s) * 8;
+    for (int k = 0; k < 5; ++k) *q++ = sc[k];
+    const float *st = f.monStatuses.data() + std::size_t(s) * 42;
+    for (int k = 0; k < 42; ++k) *q++ = st[k];
+    for (int k = 5; k < 8; ++k) *q++ = sc[k];
+}
+
+void ForwardNet::encSelect(const Features &f, float *out) {
+    const int C = cfg_.cardSelectSlots;
+    s_a_.resize(std::size_t(C) * d_);
+    for (int s = 0; s < C; ++s) {
+        const float *e = row(emb_, embRows_, d_, f.selectIdx[s], "card-select card");
+        const float v = f.selectValid[s];
+        for (int k = 0; k < d_; ++k) s_a_[std::size_t(s) * d_ + k] = e[k] * v;
+    }
+    linear(sel_, s_a_.data(), out); relu(out, selOut_);
+}
+
+void ForwardNet::encStasis(const Features &f, float *out) {
+    s_a_.resize(std::size_t(2) * d_);
+    for (int s = 0; s < 2; ++s) {
+        const float *e = row(emb_, embRows_, d_, f.stasisIdx[s], "stasis card");
+        const float v = f.stasisValid[s];
+        for (int k = 0; k < d_; ++k) s_a_[std::size_t(s) * d_ + k] = e[k] * v;
+    }
+    linear(stas_, s_a_.data(), out); relu(out, stasOut_);
+}
+
+void ForwardNet::encodeSection(FeatSection s, const Features &f, float *out) {
+    switch (s) {
+        case FeatSection::Scalars: encScalars(f, out); return;
+        case FeatSection::Hand: encHand(f, out); return;
+        case FeatSection::Draw: encDraw(f, out); return;
+        case FeatSection::Discard: encPile(f.discardIdx, out, "discard card"); return;
+        case FeatSection::Exhaust: encPile(f.exhaustIdx, out, "exhaust card"); return;
+        case FeatSection::Monster: encMonsters(f, out); return;
+        case FeatSection::CardSelect: encSelect(f, out); return;
+        case FeatSection::Stasis: encStasis(f, out); return;
+    }
+    fail("encodeSection: bad section");
+}
+
+// ---- fusion, heads, post-processing ------------------------------------------------------------------------------
+void ForwardNet::fusionStage(const float *fuse, float *nm) {
+    linear(fus_, fuse, nm); layerNorm(fusLN_, nm); relu(nm, fuseOut_);
+}
+
+void ForwardNet::headsStage(const float *nm, std::vector<float> &lg, std::vector<float> &vl) {
     auto runHead = [&](const std::vector<Lin> &L, std::vector<float> &res) {
-        std::vector<float> cur(s_nm_.begin(), s_nm_.begin() + fuseOut_), nxt;
+        std::vector<float> cur(nm, nm + fuseOut_), nxt;
         for (std::size_t k = 0; k < L.size(); ++k) {
             nxt.assign(L[k].out, 0.f);
             linear(L[k], cur.data(), nxt.data());
@@ -488,14 +539,14 @@ ForwardOutput ForwardNet::forward(const Features &f, const PyMask76 &mask) {
         }
         res.swap(cur);
     };
-    std::vector<float> lg, vl;
     runHead(policy_, lg); runHead(value_, vl);
+}
 
+// _post_process_row: softmax(float logits) * mask, total > 1e-8 ? / total : uniform over legal
+ForwardOutput ForwardNet::postProcess(const float *lg, float value, const PyMask76 &mask) {
     ForwardOutput out;
     for (int a = 0; a < PY_ACTION_SPACE; ++a) out.logits[a] = mask[a] ? lg[a] : kMaskedLogit;
-    out.value = vl[0];
-
-    // ---- _post_process_row: softmax(float logits) * mask, total > 1e-8 ? / total : uniform over legal ----
+    out.value = value;
     float mx = out.logits[0];
     for (int a = 1; a < PY_ACTION_SPACE; ++a) mx = std::max(mx, out.logits[a]);
     float ex[PY_ACTION_SPACE];
@@ -511,6 +562,204 @@ ForwardOutput ForwardNet::forward(const Features &f, const PyMask76 &mask) {
         for (int a = 0; a < PY_ACTION_SPACE; ++a) out.P[a] = nLegal > 0 && mask[a] ? 1.0f / float(nLegal) : 0.f;
     }
     return out;
+}
+
+ForwardOutput ForwardNet::fuseAndHeads(const float *fuse, const PyMask76 &mask) {
+    s_nm_.resize(fuseOut_);
+    fusionStage(fuse, s_nm_.data());
+    std::vector<float> lg, vl;
+    headsStage(s_nm_.data(), lg, vl);
+    return postProcess(lg.data(), vl[0], mask);
+}
+
+ForwardOutput ForwardNet::forward(const Features &f, const PyMask76 &mask) {
+    checkFeatures(f);
+    float *fuse = s_fuse_.data();
+    for (FeatSection s : {FeatSection::Scalars, FeatSection::Hand, FeatSection::Draw, FeatSection::Discard,
+                          FeatSection::Exhaust, FeatSection::Monster, FeatSection::CardSelect, FeatSection::Stasis})
+        encodeSection(s, f, fuse + sectionOffset(s));
+    return fuseAndHeads(fuse, mask);
+}
+
+// ===== batched forward ===================================================================================================
+// Every Linear is computed across the n rows with the weight row for input i loaded once and applied to all rows; each
+// row's per-output accumulation is still `0 + w[0]*x[0] + w[1]*x[1] + ...` in ascending i, then + bias: the same
+// operations in the same order as linear(), so every row is bit-identical to forward() on that row alone.
+void ForwardNet::linearB(const Lin &l, const float *const *xs, float *const *ys, int n) {
+    const int out = l.out;
+    for (int b = 0; b < n; ++b) { float *y = ys[b]; for (int o = 0; o < out; ++o) y[o] = 0.f; }
+    for (int i = 0; i < l.in; ++i) {
+        const float *w = l.wt.data() + std::size_t(i) * out;
+        for (int b = 0; b < n; ++b) {
+            const float xi = xs[b][i];
+            float *y = ys[b];
+            for (int o = 0; o < out; ++o) y[o] += w[o] * xi;
+        }
+    }
+    for (int b = 0; b < n; ++b) { float *y = ys[b]; for (int o = 0; o < out; ++o) y[o] += l.b[o]; }
+}
+
+std::vector<ForwardOutput> ForwardNet::forwardBatch(const std::vector<const Features *> &fs,
+                                                    const std::vector<const PyMask76 *> &masks) {
+    const int B = int(fs.size());
+    if (masks.size() != fs.size()) fail("forwardBatch: " + std::to_string(fs.size()) + " feature rows but " + std::to_string(masks.size()) + " masks");
+    std::vector<ForwardOutput> res;
+    if (B == 0) return res;
+    for (const Features *f : fs) checkFeatures(*f);
+    const int H = cfg_.handSlots, S = cfg_.monsterSlots;
+    const int FW = int(s_fuse_.size());
+    std::vector<float> fuseAll(std::size_t(B) * FW, 0.f);
+    auto fuseRow = [&](int b, FeatSection s) { return fuseAll.data() + std::size_t(b) * FW + sectionOffset(s); };
+
+    std::vector<const float *> xs; std::vector<float *> ys;
+    std::vector<float> A, Bv, Cv, Dv;
+
+    // ---- scalars ----
+    {
+        A.assign(std::size_t(B) * sc0_.out, 0.f);
+        xs.resize(B); ys.resize(B);
+        for (int b = 0; b < B; ++b) { xs[b] = fs[b]->scalars.data(); ys[b] = A.data() + std::size_t(b) * sc0_.out; }
+        linearB(sc0_, xs.data(), ys.data(), B);
+        for (int b = 0; b < B; ++b) { layerNorm(sc1_, ys[b]); relu(ys[b], sc0_.out); xs[b] = ys[b]; ys[b] = fuseRow(b, FeatSection::Scalars); }
+        linearB(sc2lin_, xs.data(), ys.data(), B);
+        for (int b = 0; b < B; ++b) { layerNorm(sc4_, ys[b]); relu(ys[b], scalarOut_); }
+    }
+    // ---- hand: B*H token rows, then B aggregate rows ----
+    {
+        const int R = B * H;
+        A.assign(std::size_t(R) * (d_ + 3), 0.f);
+        Bv.assign(std::size_t(R) * handTok_, 0.f);
+        xs.resize(R); ys.resize(R);
+        for (int b = 0; b < B; ++b)
+            for (int s = 0; s < H; ++s) {
+                const Features &f = *fs[b];
+                float *in = A.data() + std::size_t(b * H + s) * (d_ + 3);
+                const float *e = row(emb_, embRows_, d_, f.handIdx[s], "hand card");
+                const float v = f.handValid[s];
+                for (int k = 0; k < d_; ++k) in[k] = e[k] * v;
+                for (int k = 0; k < 3; ++k) in[d_ + k] = f.handScalars[std::size_t(s) * 3 + k];
+                xs[b * H + s] = in; ys[b * H + s] = Bv.data() + std::size_t(b * H + s) * handTok_;
+            }
+        linearB(handCard_, xs.data(), ys.data(), R);
+        for (int r = 0; r < R; ++r) relu(ys[r], handTok_);
+        xs.resize(B); ys.resize(B);
+        for (int b = 0; b < B; ++b) { xs[b] = Bv.data() + std::size_t(b) * H * handTok_; ys[b] = fuseRow(b, FeatSection::Hand); }
+        linearB(handAgg_, xs.data(), ys.data(), B);
+        for (int b = 0; b < B; ++b) { layerNorm(handLN_, ys[b]); relu(ys[b], handOut_); }
+    }
+    // ---- draw (mean + Frozen-Eye preview rows only for the rows that hold it), discard, exhaust ----
+    {
+        std::vector<int> eye;
+        for (int b = 0; b < B; ++b) {
+            float *o = fuseRow(b, FeatSection::Draw);
+            encPile(fs[b]->drawIdx, o, "draw card");
+            if (fs[b]->hasFrozenEye) eye.push_back(b);
+            else for (int k = 0; k < prevOut_; ++k) o[d_ + k] = 0.f;
+            encPile(fs[b]->discardIdx, fuseRow(b, FeatSection::Discard), "discard card");
+            encPile(fs[b]->exhaustIdx, fuseRow(b, FeatSection::Exhaust), "exhaust card");
+        }
+        const int R = int(eye.size());
+        if (R > 0) {
+            const int P = cfg_.previewSlots;
+            A.assign(std::size_t(R) * P * d_, 0.f);
+            xs.resize(R); ys.resize(R);
+            for (int r = 0; r < R; ++r) {
+                const Features &f = *fs[eye[r]];
+                float *in = A.data() + std::size_t(r) * P * d_;
+                for (int s = 0; s < P; ++s) {
+                    const float *e = row(emb_, embRows_, d_, f.previewIdx[s], "preview card");
+                    const float v = f.previewValid[s];
+                    for (int k = 0; k < d_; ++k) in[std::size_t(s) * d_ + k] = e[k] * v;
+                }
+                xs[r] = in; ys[r] = fuseRow(eye[r], FeatSection::Draw) + d_;
+            }
+            linearB(prev_, xs.data(), ys.data(), R);
+            for (int r = 0; r < R; ++r) {
+                relu(ys[r], prevOut_);
+                for (int k = 0; k < prevOut_; ++k) ys[r][k] = previewGate_ * ys[r][k];
+            }
+        }
+    }
+    // ---- monsters: B*S rows ----
+    {
+        const int R = B * S;
+        A.assign(std::size_t(R) * seq0_.in, 0.f);
+        Bv.assign(std::size_t(R) * seq0_.out, 0.f);
+        Cv.assign(std::size_t(R) * seqCtx_, 0.f);
+        Dv.assign(std::size_t(R) * mon_.in, 0.f);
+        xs.resize(R); ys.resize(R);
+        for (int b = 0; b < B; ++b)
+            for (int s = 0; s < S; ++s) {
+                const int r = b * S + s;
+                monsterInput(*fs[b], s, A.data() + std::size_t(r) * seq0_.in);
+                xs[r] = A.data() + std::size_t(r) * seq0_.in; ys[r] = Bv.data() + std::size_t(r) * seq0_.out;
+            }
+        linearB(seq0_, xs.data(), ys.data(), R);
+        for (int r = 0; r < R; ++r) { relu(ys[r], seq0_.out); xs[r] = ys[r]; ys[r] = Cv.data() + std::size_t(r) * seqCtx_; }
+        linearB(seq2_, xs.data(), ys.data(), R);
+        for (int r = 0; r < R; ++r) {
+            relu(ys[r], seqCtx_);
+            monsterTokenInput(*fs[r / S], r % S, ys[r], Dv.data() + std::size_t(r) * mon_.in);
+            xs[r] = Dv.data() + std::size_t(r) * mon_.in;
+            ys[r] = fuseRow(r / S, FeatSection::Monster) + std::size_t(r % S) * monTok_;
+        }
+        linearB(mon_, xs.data(), ys.data(), R);
+        for (int r = 0; r < R; ++r) { layerNorm(monLN_, ys[r]); relu(ys[r], monTok_); }
+    }
+    // ---- card select, stasis ----
+    {
+        const int C = cfg_.cardSelectSlots;
+        A.assign(std::size_t(B) * C * d_, 0.f);
+        xs.resize(B); ys.resize(B);
+        for (int b = 0; b < B; ++b) {
+            const Features &f = *fs[b];
+            float *in = A.data() + std::size_t(b) * C * d_;
+            for (int s = 0; s < C; ++s) {
+                const float *e = row(emb_, embRows_, d_, f.selectIdx[s], "card-select card");
+                const float v = f.selectValid[s];
+                for (int k = 0; k < d_; ++k) in[std::size_t(s) * d_ + k] = e[k] * v;
+            }
+            xs[b] = in; ys[b] = fuseRow(b, FeatSection::CardSelect);
+        }
+        linearB(sel_, xs.data(), ys.data(), B);
+        for (int b = 0; b < B; ++b) relu(ys[b], selOut_);
+        A.assign(std::size_t(B) * 2 * d_, 0.f);
+        for (int b = 0; b < B; ++b) {
+            const Features &f = *fs[b];
+            float *in = A.data() + std::size_t(b) * 2 * d_;
+            for (int s = 0; s < 2; ++s) {
+                const float *e = row(emb_, embRows_, d_, f.stasisIdx[s], "stasis card");
+                const float v = f.stasisValid[s];
+                for (int k = 0; k < d_; ++k) in[std::size_t(s) * d_ + k] = e[k] * v;
+            }
+            xs[b] = in; ys[b] = fuseRow(b, FeatSection::Stasis);
+        }
+        linearB(stas_, xs.data(), ys.data(), B);
+        for (int b = 0; b < B; ++b) relu(ys[b], stasOut_);
+    }
+    // ---- fusion ----
+    std::vector<float> nm(std::size_t(B) * fuseOut_, 0.f);
+    xs.resize(B); ys.resize(B);
+    for (int b = 0; b < B; ++b) { xs[b] = fuseAll.data() + std::size_t(b) * FW; ys[b] = nm.data() + std::size_t(b) * fuseOut_; }
+    linearB(fus_, xs.data(), ys.data(), B);
+    for (int b = 0; b < B; ++b) { layerNorm(fusLN_, ys[b]); relu(ys[b], fuseOut_); }
+    // ---- heads ----
+    auto runHead = [&](const std::vector<Lin> &L, std::vector<std::vector<float>> &resv) {
+        std::vector<std::vector<float>> cur(B), nxt(B);
+        for (int b = 0; b < B; ++b) cur[b].assign(nm.data() + std::size_t(b) * fuseOut_, nm.data() + std::size_t(b + 1) * fuseOut_);
+        for (std::size_t k = 0; k < L.size(); ++k) {
+            for (int b = 0; b < B; ++b) { nxt[b].assign(L[k].out, 0.f); xs[b] = cur[b].data(); ys[b] = nxt[b].data(); }
+            linearB(L[k], xs.data(), ys.data(), B);
+            if (k + 1 < L.size()) for (int b = 0; b < B; ++b) relu(ys[b], L[k].out);
+            cur.swap(nxt);
+        }
+        resv.swap(cur);
+    };
+    std::vector<std::vector<float>> lg, vl;
+    runHead(policy_, lg); runHead(value_, vl);
+    res.reserve(B);
+    for (int b = 0; b < B; ++b) res.push_back(postProcess(lg[b].data(), vl[b][0], *masks[b]));
+    return res;
 }
 
 }  // namespace sts::search
