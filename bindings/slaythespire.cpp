@@ -1685,7 +1685,7 @@ PYBIND11_MODULE(slaythespire, m) {
                 return out;
              }, "The 76-slot mask THIS search uses (per its legality mode) for a battle context")
         .def("set_mutation", &sts::search::PuctSearch::setMutation, "TEST ONLY: 0 exact; 1..4 = C.4e mutations")
-        .def("begin_weights", [](sts::search::PuctSearch &ps, int era) { ps.forwardNet().beginWeights(era); },
+        .def("begin_weights", [](sts::search::PuctSearch &ps, int era) { ps.clearForwardMemo(); ps.forwardNet().beginWeights(era); },
              pybind11::arg("era"),
              "PLAN-cpp-inference B.1: start a C++-forward weight load; raises if era != the featurizer's era")
         .def("load_weight", [](sts::search::PuctSearch &ps, const std::string &name,
@@ -1745,6 +1745,57 @@ PYBIND11_MODULE(slaythespire, m) {
             return pybind11::make_tuple(lg, pp, vv);
         }, pybind11::arg("bcs"), pybind11::arg("masks") = pybind11::none(),
            "TEST/diagnostic: ForwardNet::forwardBatch over the batch -> (logits[n,76], P[n,76], value[n]) float32")
+        .def("set_leaf_forward", &sts::search::PuctSearch::setLeafForward, pybind11::arg("cpp"),
+             "PLAN-cpp-inference B.4: evaluate nn-cache misses in C++ (memo -> encodeSection -> fuseAndHeads), no Python "
+             "callback; raises if the weights are not finalized")
+        .def("leaf_forward", &sts::search::PuctSearch::leafForward)
+        .def("set_forward_memo", &sts::search::PuctSearch::setForwardMemo, pybind11::arg("on"),
+             "B.3: the C++ per-section memo (default on)")
+        .def("forward_memo", &sts::search::PuctSearch::forwardMemo)
+        .def("set_forward_memo_cap", &sts::search::PuctSearch::setForwardMemoCap, pybind11::arg("cap"))
+        .def("forward_memo_cap", &sts::search::PuctSearch::forwardMemoCap)
+        .def("clear_forward_memo", &sts::search::PuctSearch::clearForwardMemo)
+        .def("forward_memo_size", [](const sts::search::PuctSearch &ps, int section) {
+            if (section < 0 || section >= sts::search::kNumFeatSections) throw std::invalid_argument("bad section");
+            return ps.forwardMemoSize(static_cast<sts::search::FeatSection>(section)); }, pybind11::arg("section"))
+        .def("set_memo_mutation", &sts::search::PuctSearch::setMemoMutation, "TEST ONLY: memo/leaf mutations 1..3")
+        .def("memo_counters", [](const sts::search::PuctSearch &ps) {
+            static const char *names[] = {"scalars", "hand", "draw", "discard", "exhaust", "card_select", "stasis", "monster"};
+            const auto &c = ps.counters();
+            pybind11::dict d;
+            for (int i = 0; i < sts::search::kNumFeatSections; ++i)
+                d[names[i]] = pybind11::make_tuple(c.memoHits[i], c.memoMisses[i]);
+            d["cpp_leaf_forwards"] = c.cppLeafForwards;
+            d["memo_clears"] = c.memoClears;
+            return d;
+        }, "per-section (hits, misses) of the C++ forward memo, plus cpp_leaf_forwards and memo_clears")
+        .def("debug_memo_forward", [](sts::search::PuctSearch &ps, const BattleContext &bc, pybind11::object mask_override) {
+            sts::search::PyMask76 mask = ps.legalMask(bc);
+            if (!mask_override.is_none()) {
+                auto m = pybind11::cast<pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast>>(mask_override);
+                if (m.size() != sts::search::PY_ACTION_SPACE) throw std::runtime_error("debug_memo_forward: mask must have 76 entries");
+                for (int a = 0; a < sts::search::PY_ACTION_SPACE; ++a) mask[a] = m.data()[a];
+            }
+            const sts::search::Features f = sts::search::featurize(bc, ps.config());
+            const sts::search::ForwardOutput o = ps.memoForward(f, mask);
+            pybind11::array_t<float> lg(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            pybind11::array_t<float> pp(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            std::memcpy(lg.mutable_data(), o.logits.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            std::memcpy(pp.mutable_data(), o.P.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            return pybind11::make_tuple(lg, pp, double(o.value));
+        }, pybind11::arg("bc"), pybind11::arg("mask") = pybind11::none(),
+           "TEST/diagnostic: debug_forward through the section memo (honours set_forward_memo)")
+        .def("debug_encode_section", [](sts::search::PuctSearch &ps, const BattleContext &bc, int section, bool via_memo) {
+            if (section < 0 || section >= sts::search::kNumFeatSections) throw std::invalid_argument("bad section");
+            const auto s = static_cast<sts::search::FeatSection>(section);
+            const sts::search::Features f = sts::search::featurize(bc, ps.config());
+            ps.forwardNet().checkFeatures(f);
+            pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{ps.forwardNet().sectionWidth(s)});
+            if (via_memo) ps.encodeSectionMemo(f, s, out.mutable_data());
+            else ps.forwardNet().encodeSection(s, f, out.mutable_data());
+            return out;
+        }, pybind11::arg("bc"), pybind11::arg("section"), pybind11::arg("via_memo"),
+           "TEST/diagnostic: one section's encoder output (FeatSection index), direct or through the memo")
         .def("reset_counters", &sts::search::PuctSearch::resetCounters)
         .def("last_root_w", [](const sts::search::PuctSearch &ps) {
             pybind11::array_t<float> out(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});

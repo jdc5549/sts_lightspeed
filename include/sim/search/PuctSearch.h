@@ -80,6 +80,10 @@ namespace sts::search {
         // peakTreeNodes * PuctSearch::nodeBytes()), and the largest virtual-loss charge still in flight
         // AFTER any step's completion (must be 0: every charge is reversed).
         long long vlDescents = 0, vlCollisions = 0, vlPendingMax = 0, peakTreeNodes = 0, vlInflightAfterStepMax = 0;
+        // PLAN-cpp-inference B.3/B.4: per-section forward-memo lookups (indexed by FeatSection; discard and exhaust
+        // share ONE map but are counted under their own section) and leaf forwards run in C++.
+        std::array<long long, kNumFeatSections> memoHits{}, memoMisses{};
+        long long cppLeafForwards = 0, memoClears = 0;
     };
 
     // TEST/diagnostic record of one pending leaf of a lockstep step (see setRecordLockstepLog).
@@ -94,10 +98,33 @@ namespace sts::search {
     public:
         explicit PuctSearch(const FeaturizerConfig &cfg) : cfg_(cfg), fwd_(std::make_unique<ForwardNet>(cfg)) {}
 
-        // PLAN-cpp-inference B.1/B.2: the C++ leaf forward's weights (see Forward.h). NOT yet used by
-        // runTree/runTreesLockstep (B.4); debugForward is the diagnostic entry.
+        // PLAN-cpp-inference B.1/B.2: the C++ leaf forward's weights (see Forward.h); debugForward is the
+        // diagnostic entry (no memo).
         ForwardNet &forwardNet() { return *fwd_; }
         ForwardOutput debugForward(const BattleContext &bc, const PyMask76 &mask);
+
+        // B.4: with leafForward on, an nn-cache MISS is evaluated by the C++ forward (memo -> encodeSection misses
+        // -> fuseAndHeads) and NO Python callback is invoked (the callbacks passed to runTree/runTreesLockstep may
+        // be empty); lockstep rows are evaluated one by one at B=1 (decision 1, shape 3). Throws if the weights
+        // are not finalized.
+        void setLeafForward(bool cpp);
+        bool leafForward() const { return leafForward_; }
+        // B.3: the section memo. Default ON. Cleared by clear() (per combat), by beginWeights via
+        // clearForwardMemo(), and wholesale when a map reaches the cap (exactly Python's `_memo`).
+        void setForwardMemo(bool on) { memoOn_ = on; }
+        bool forwardMemo() const { return memoOn_; }
+        void setForwardMemoCap(std::size_t cap) { memoCap_ = cap; }
+        std::size_t forwardMemoCap() const { return memoCap_; }
+        void clearForwardMemo();
+        std::size_t forwardMemoSize(FeatSection s) const;       // entries in the map that serves `s`
+        // One leaf through the memo path (what the search calls on a miss under leafForward). Public so tests can
+        // drive it directly; `mutation` hooks are test-only (setMemoMutation).
+        ForwardOutput memoForward(const Features &f, const PyMask76 &mask);
+        void encodeSectionMemo(const Features &f, FeatSection s, float *out);   // one section via the memo
+        // TEST ONLY: 0 exact. 1 = a memo HIT returns the PREVIOUS lookup's entry (stale). 2 = discard and exhaust
+        // get SEPARATE keys-spaces collapsed to one slot per section (hit on any same-section key returns the
+        // first entry stored): a key-collision mutation.
+        void setMemoMutation(int m) { memoMutation_ = m; }
 
         // Per-combat caches (MCTSMicroAgent.set_bc clears both Python caches).
         void clear();
@@ -222,8 +249,19 @@ namespace sts::search {
         void applyRootNoise(Node &root, const Bundle &rootState, const std::vector<double> &noise, double eps);
         static double terminalValue(const BattleContext &bc, TerminalMode mode);
 
+        LeafResult cppLeaf(const Features &f, const PyMask76 &mask);
+
         FeaturizerConfig cfg_;
         std::unique_ptr<ForwardNet> fwd_;
+        // section memo: [0] scalars [1] hand [2] draw [3] pile (discard+exhaust) [4] card_select [5] stasis [6] monster
+        static constexpr int kMemoMaps = 7;
+        static int memoMapOf(FeatSection s);
+        std::array<std::unordered_map<std::string, std::vector<float>>, kMemoMaps> memo_;
+        std::vector<float> fuseBuf_;
+        const std::vector<float> *lastHit_ = nullptr;   // TEST mutation 1
+        bool leafForward_ = false, memoOn_ = true;
+        std::size_t memoCap_ = 20000;
+        int memoMutation_ = 0;
         std::unordered_map<std::string, NNEntry> nn_;
         std::unordered_map<std::uint64_t, Bundle> extract_;
         SearchCounters counters_;

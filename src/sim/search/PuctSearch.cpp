@@ -140,6 +140,79 @@ namespace sts::search {
     void PuctSearch::clear() {
         nn_.clear();
         extract_.clear();
+        clearForwardMemo();
+    }
+
+    void PuctSearch::setLeafForward(bool cpp) {
+        if (cpp && !fwd_->finalized())
+            throw std::runtime_error("setLeafForward(true): the C++ forward has no finalized weights "
+                                     "(load_weight... then finalize_weights first)");
+        leafForward_ = cpp;
+    }
+
+    void PuctSearch::clearForwardMemo() {
+        for (auto &m : memo_) m.clear();
+        lastHit_ = nullptr;
+    }
+
+    int PuctSearch::memoMapOf(FeatSection s) {
+        switch (s) {
+            case FeatSection::Scalars: return 0;
+            case FeatSection::Hand: return 1;
+            case FeatSection::Draw: return 2;
+            case FeatSection::Discard: case FeatSection::Exhaust: return 3;   // ONE shared pile map (as cpp_pile)
+            case FeatSection::CardSelect: return 4;
+            case FeatSection::Stasis: return 5;
+            case FeatSection::Monster: return 6;
+        }
+        throw std::logic_error("memoMapOf: bad section");
+    }
+
+    std::size_t PuctSearch::forwardMemoSize(FeatSection s) const { return memo_[memoMapOf(s)].size(); }
+
+    // One section through the memo: a hit copies the stored output floats, a miss computes into `out` and stores a
+    // copy (clearing the whole map first when it is full, exactly Python's `_memo`). Identical bytes either way.
+    void PuctSearch::encodeSectionMemo(const Features &f, FeatSection s, float *out) {
+        if (!memoOn_) { fwd_->encodeSection(s, f, out); return; }
+        const int w = fwd_->sectionWidth(s);
+        const int si = static_cast<int>(s);
+        auto &map = memo_[memoMapOf(s)];
+        std::string key = sectionKey(f, s);
+        if (memoMutation_ == 2) key.clear();                            // TEST: every key of a map collides
+        auto it = map.find(key);
+        if (it != map.end()) {
+            ++counters_.memoHits[si];
+            const std::vector<float> *src = &it->second;
+            if (memoMutation_ == 1 && lastHit_ != nullptr && lastHit_->size() == it->second.size()) src = lastHit_;
+            lastHit_ = &it->second;
+            std::copy(src->begin(), src->end(), out);
+            return;
+        }
+        ++counters_.memoMisses[si];
+        fwd_->encodeSection(s, f, out);
+        if (map.size() >= memoCap_) { map.clear(); lastHit_ = nullptr; ++counters_.memoClears; }
+        map.emplace(std::move(key), std::vector<float>(out, out + w));
+    }
+
+    // forward() == encode every section in fusion order into the fuse buffer, then fuseAndHeads; here each section
+    // goes through its memo.
+    ForwardOutput PuctSearch::memoForward(const Features &f, const PyMask76 &mask) {
+        fwd_->checkFeatures(f);
+        fuseBuf_.resize(static_cast<std::size_t>(fwd_->fuseWidth()));
+        float *fuse = fuseBuf_.data();
+        for (FeatSection s : {FeatSection::Scalars, FeatSection::Hand, FeatSection::Draw, FeatSection::Discard,
+                              FeatSection::Exhaust, FeatSection::Monster, FeatSection::CardSelect, FeatSection::Stasis})
+            encodeSectionMemo(f, s, fuse + fwd_->sectionOffset(s));
+        return fwd_->fuseAndHeads(fuse, mask);
+    }
+
+    LeafResult PuctSearch::cppLeaf(const Features &f, const PyMask76 &mask) {
+        ++counters_.cppLeafForwards;
+        const ForwardOutput o = memoForward(f, mask);
+        LeafResult r;
+        r.P = o.P;
+        r.value = static_cast<double>(o.value);
+        return r;
     }
 
     PuctSearch::Bundle PuctSearch::makeBundle(const BattleContext &bc, bool wantFeatures) const {
@@ -165,9 +238,11 @@ namespace sts::search {
         }
         ++counters_.nnMisses;
         if (!state.feat) throw std::logic_error("PuctSearch: nn miss on a bundle extracted without features");
-        if (leafEval == nullptr) throw std::logic_error("PuctSearch: nn miss with no leaf evaluator");
+        if (!leafForward_ && leafEval == nullptr) throw std::logic_error("PuctSearch: nn miss with no leaf evaluator");
         ++counters_.leafEvals;
-        const LeafResult r = (*leafEval)(*state.feat, state.mask);
+        // memoMutation_ 3 (TEST): the SECOND miss is routed through the Python callback (the counter-test mutation).
+        const bool viaPython = !leafForward_ || (memoMutation_ == 3 && leafEval != nullptr && counters_.nnMisses == 2);
+        const LeafResult r = viaPython ? (*leafEval)(*state.feat, state.mask) : cppLeaf(*state.feat, state.mask);
         node.P = r.P;
         node.mask = state.mask;
         node.expanded = true;
@@ -418,7 +493,10 @@ namespace sts::search {
                 if (static_cast<long long>(nRows) > counters_.maxBatch) counters_.maxBatch = static_cast<long long>(nRows);
 
                 std::vector<LeafResult> results;
-                if (mutation_ == 5) {                                       // TEST ONLY: reversed composition
+                if (leafForward_) {                                         // B.4: rows one by one at B=1, no Python
+                    results.reserve(nRows);
+                    for (std::size_t i = 0; i < nRows; ++i) results.push_back(cppLeaf(*feats[i], *masks[i]));
+                } else if (mutation_ == 5) {                                       // TEST ONLY: reversed composition
                     std::vector<const Features *> rf(feats.rbegin(), feats.rend());
                     std::vector<const PyMask76 *> rm(masks.rbegin(), masks.rend());
                     results = batchEval(rf, rm);
