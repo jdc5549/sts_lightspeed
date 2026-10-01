@@ -31,6 +31,7 @@
 #include "sim/search/Forward.h"
 #include "sim/search/GameLegality.h"
 #include "sim/search/PyLegality.h"
+#include "sim/search/Sha256.h"
 
 namespace sts::search {
 
@@ -125,6 +126,14 @@ namespace sts::search {
         // get SEPARATE keys-spaces collapsed to one slot per section (hit on any same-section key returns the
         // first entry stored): a key-collision mutation.
         void setMemoMutation(int m) { memoMutation_ = m; }
+        // PLAN-cpp-inference gap 1: a CUMULATIVE running SHA-256 over every leaf result the tree consumes from the
+        // C++ forward (one update per cppLeaf call, memo hit or miss: P[76] float bytes then the value as the
+        // double the tree uses), in evaluation order. NOT reset by clear(); only by resetLeafDigest().
+        std::string leafDigest() const { Sha256 c = leafSha_; return c.hex(); }
+        long long leafDigestN() const { return leafDigestN_; }
+        void resetLeafDigest() { leafSha_ = Sha256(); leafDigestN_ = 0; }
+        // TEST: one leaf through cppLeaf (counted and digested), as the tree would call it on an nn miss.
+        LeafResult debugCppLeaf(const Features &f, const PyMask76 &mask) { return cppLeaf(f, mask); }
 
         // Per-combat caches (MCTSMicroAgent.set_bc clears both Python caches).
         void clear();
@@ -259,6 +268,8 @@ namespace sts::search {
         std::array<std::unordered_map<std::string, std::vector<float>>, kMemoMaps> memo_;
         std::vector<float> fuseBuf_;
         const std::vector<float> *lastHit_ = nullptr;   // TEST mutation 1
+        Sha256 leafSha_;
+        long long leafDigestN_ = 0;
         bool leafForward_ = false, memoOn_ = true;
         std::size_t memoCap_ = 20000;
         int memoMutation_ = 0;

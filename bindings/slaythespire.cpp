@@ -77,17 +77,9 @@ pybind11::dict featuresToPy(const sts::search::Features &f, const sts::search::F
 // PLAN-cpp-inference M.2: times the REAL ForwardNet (Forward.cpp, the same object the search uses) on precomputed
 // Features. featurize/legality are outside every timed region. Single thread; the caller pins the CPU.
 namespace {
-struct ForwardBench {
-    sts::search::PuctSearch *ps;
-    std::vector<sts::search::Features> feats;
-    std::vector<sts::search::PyMask76> masks;
-    explicit ForwardBench(sts::search::PuctSearch &search) : ps(&search) {}
-    void addBc(const BattleContext &bc) {
-        feats.push_back(sts::search::featurize(bc, ps->config()));
-        masks.push_back(ps->legalMask(bc));
-    }
-    // A leaf exactly as the search's Python callback receives it: the `featuresToPy` dict + the bool[76] mask.
-    void addSections(const pybind11::dict &d, const pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast> &mask) {
+// The ONE parser of the Python leaf callback's sections-dict layout (featuresToPy's output) -> Features + mask.
+std::pair<sts::search::Features, sts::search::PyMask76> featuresFromSections(
+        const pybind11::dict &d, const pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast> &mask) {
         namespace py = pybind11;
         using F32 = py::array_t<float, py::array::c_style | py::array::forcecast>;
         using I64 = py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>;
@@ -109,7 +101,22 @@ struct ForwardBench {
         if (mask.size() != sts::search::PY_ACTION_SPACE) throw std::runtime_error("addSections: mask must have 76 entries");
         sts::search::PyMask76 mk;
         for (int a = 0; a < sts::search::PY_ACTION_SPACE; ++a) mk[a] = mask.data()[a];
-        feats.push_back(std::move(f)); masks.push_back(mk);
+        return {std::move(f), mk};
+}
+
+struct ForwardBench {
+    sts::search::PuctSearch *ps;
+    std::vector<sts::search::Features> feats;
+    std::vector<sts::search::PyMask76> masks;
+    explicit ForwardBench(sts::search::PuctSearch &search) : ps(&search) {}
+    void addBc(const BattleContext &bc) {
+        feats.push_back(sts::search::featurize(bc, ps->config()));
+        masks.push_back(ps->legalMask(bc));
+    }
+    // A leaf exactly as the search's Python callback receives it: the `featuresToPy` dict + the bool[76] mask.
+    void addSections(const pybind11::dict &d, const pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast> &mask) {
+        auto fm = featuresFromSections(d, mask);
+        feats.push_back(std::move(fm.first)); masks.push_back(fm.second);
     }
     static double usSince(std::chrono::steady_clock::time_point t0) {
         return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
@@ -1717,6 +1724,18 @@ PYBIND11_MODULE(slaythespire, m) {
             return pybind11::make_tuple(lg, pp, double(o.value));
         }, pybind11::arg("bc"), pybind11::arg("mask") = pybind11::none(),
            "TEST/diagnostic: featurize bc, run the C++ forward under the search's legality mask (or `mask`, bool[76]) -> (masked logits[76], P[76], value)")
+        .def("debug_forward_sections", [](sts::search::PuctSearch &ps, const pybind11::dict &sections,
+                                          const pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast> &mask) {
+            auto fm = featuresFromSections(sections, mask);
+            const sts::search::ForwardOutput o = ps.forwardNet().forward(fm.first, fm.second);
+            pybind11::array_t<float> lg(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            pybind11::array_t<float> pp(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            std::memcpy(lg.mutable_data(), o.logits.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            std::memcpy(pp.mutable_data(), o.P.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            return pybind11::make_tuple(lg, pp, double(o.value));
+        }, pybind11::arg("sections"), pybind11::arg("mask"),
+           "C++ forward on a sections dict in the layout the search's Python leaf callback receives (same parser as "
+           "ForwardBench.add_sections) + bool[76] mask -> (masked logits[76], P[76], value)")
         .def("debug_forward_batch", [](sts::search::PuctSearch &ps, const std::vector<const BattleContext *> &bcs,
                                        pybind11::object masks_override) {
             std::vector<sts::search::Features> feats;
@@ -1758,7 +1777,25 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("forward_memo_size", [](const sts::search::PuctSearch &ps, int section) {
             if (section < 0 || section >= sts::search::kNumFeatSections) throw std::invalid_argument("bad section");
             return ps.forwardMemoSize(static_cast<sts::search::FeatSection>(section)); }, pybind11::arg("section"))
-        .def("set_memo_mutation", &sts::search::PuctSearch::setMemoMutation, "TEST ONLY: memo/leaf mutations 1..3")
+        .def("set_memo_mutation", &sts::search::PuctSearch::setMemoMutation, "TEST ONLY: memo/leaf mutations 1..4")
+        .def("leaf_digest", &sts::search::PuctSearch::leafDigest,
+             "running SHA-256 hex over every C++ leaf result the tree consumed (P[76] f32 bytes + value f64 bytes), cumulative across clear()")
+        .def("leaf_digest_n", &sts::search::PuctSearch::leafDigestN)
+        .def("reset_leaf_digest", &sts::search::PuctSearch::resetLeafDigest)
+        .def("debug_cpp_leaf", [](sts::search::PuctSearch &ps, const BattleContext &bc, pybind11::object mask_override) {
+            sts::search::PyMask76 mask = ps.legalMask(bc);
+            if (!mask_override.is_none()) {
+                auto m = pybind11::cast<pybind11::array_t<bool, pybind11::array::c_style | pybind11::array::forcecast>>(mask_override);
+                if (m.size() != sts::search::PY_ACTION_SPACE) throw std::runtime_error("debug_cpp_leaf: mask must have 76 entries");
+                for (int a = 0; a < sts::search::PY_ACTION_SPACE; ++a) mask[a] = m.data()[a];
+            }
+            const sts::search::Features f = sts::search::featurize(bc, ps.config());
+            const sts::search::LeafResult r = ps.debugCppLeaf(f, mask);
+            pybind11::array_t<float> pp(std::vector<pybind11::ssize_t>{sts::search::PY_ACTION_SPACE});
+            std::memcpy(pp.mutable_data(), r.P.data(), sizeof(float) * sts::search::PY_ACTION_SPACE);
+            return pybind11::make_tuple(pp, r.value);
+        }, pybind11::arg("bc"), pybind11::arg("mask") = pybind11::none(),
+           "TEST: one leaf through the counted+digested cppLeaf path -> (P[76] f32, value f64)")
         .def("memo_counters", [](const sts::search::PuctSearch &ps) {
             static const char *names[] = {"scalars", "hand", "draw", "discard", "exhaust", "card_select", "stasis", "monster"};
             const auto &c = ps.counters();

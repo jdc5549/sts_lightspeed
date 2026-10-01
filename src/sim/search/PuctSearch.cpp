@@ -208,10 +208,21 @@ namespace sts::search {
 
     LeafResult PuctSearch::cppLeaf(const Features &f, const PyMask76 &mask) {
         ++counters_.cppLeafForwards;
+        long long hitsBefore = 0;
+        for (int i = 0; i < kNumFeatSections; ++i) hitsBefore += counters_.memoHits[i];
         const ForwardOutput o = memoForward(f, mask);
         LeafResult r;
         r.P = o.P;
         r.value = static_cast<double>(o.value);
+        // Gap 1: digest what the tree consumes. memoMutation_ 4 (TEST) skips the update when any section hit the
+        // memo during this evaluation (the mutation the hit-exercising digest test must catch).
+        long long hitsNow = 0;
+        for (int i = 0; i < kNumFeatSections; ++i) hitsNow += counters_.memoHits[i];
+        if (!(memoMutation_ == 4 && hitsNow != hitsBefore)) {
+            leafSha_.update(r.P.data(), sizeof(float) * PY_ACTION_SPACE);
+            leafSha_.update(&r.value, sizeof(double));
+            ++leafDigestN_;
+        }
         return r;
     }
 
