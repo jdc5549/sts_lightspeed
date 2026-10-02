@@ -39,7 +39,7 @@ bool Deck::isCardBottled(int idx) const {
 }
 
 bool Deck::anyCardBottled() const {
-    return bottleIdxs[0] == -1 || bottleIdxs[1] == -1 || bottleIdxs[2] == -1;
+    return bottleIdxs[0] != -1 || bottleIdxs[1] != -1 || bottleIdxs[2] != -1;
 }
 
 int Deck::getUpgradeableCount() const {

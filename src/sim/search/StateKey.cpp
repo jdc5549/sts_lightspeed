@@ -160,8 +160,9 @@ namespace {
             }
             if (discovery < 0 || codex < 0) fail("card-select task DISCOVERY/CODEX missing");
             // The empty monster slot's move ids are "INVALID" (ordinal 0).
-            // (monsterIdStrings[0] is literally "INVALID = 0", so the empty slot's "INVALID" is written as ordinal -1.)
-            for (int k = 0; k < count(monsterIdStrings); ++k)
+            // (monsterIdStrings[0] is "INVALID" since B22; the empty slot is still written as ordinal -1.)
+            if (std::strcmp(monsterIdStrings[0], "INVALID") != 0) fail("monsterIdStrings[0] != INVALID");
+            for (int k = 1; k < count(monsterIdStrings); ++k)
                 if (std::strcmp(monsterIdStrings[k], "INVALID") == 0) fail("a real monster id is named INVALID");
             if (std::strcmp(monsterMoveStrings[0], "INVALID") != 0) fail("monsterMoveStrings[0] != INVALID");
         }

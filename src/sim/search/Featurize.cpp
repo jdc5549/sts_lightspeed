@@ -109,7 +109,7 @@ namespace {
             monId.assign(NM, 0);
             pow0.assign(NM, -1);
             pow1.assign(NM, -1);
-            for (int i = 0; i < NM; ++i) {   // same `.get(name, 0)` fallback; index 0's string is "INVALID = 0"
+            for (int i = 0; i < NM; ++i) {   // same `.get(name, 0)` fallback; index 0's string is "INVALID" (B22)
                 int k = findIn(T::kMonsterIdNames, monsterIdStrings[i]);
                 monId[i] = static_cast<short>(k < 0 ? 0 : k);
                 for (const auto &sc : T::kUniqueSchema)

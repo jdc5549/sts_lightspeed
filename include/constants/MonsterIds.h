@@ -79,7 +79,7 @@ namespace sts {
     };
 
     static constexpr const char* const  monsterIdStrings[] = {
-            "INVALID = 0",
+            "INVALID",
             "ACID_SLIME_L",
             "ACID_SLIME_M",
             "ACID_SLIME_S",
