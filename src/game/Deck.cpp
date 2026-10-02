@@ -241,6 +241,12 @@ void Deck::remove(GameContext &gc, int idx) {
         if (c.getId() == CardId::PARASITE) {
             gc.loseMaxHp(3);
         }
+        // O11: curses cannot be bottled, but a bottled card above idx shifts down with the list.
+        for (int i = 0; i < 3; ++i) {
+            if (bottleIdxs[i] > idx) {
+                --bottleIdxs[i];
+            }
+        }
         cards.remove(idx);
         return;
     }
