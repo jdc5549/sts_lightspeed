@@ -12,6 +12,9 @@ using namespace sts;
 CardInstance::CardInstance(CardId id, bool upgraded) : id(id), upgraded(upgraded) {
     cost = getEnergyCost(id, upgraded);
     costForTurn = cost;
+    if (id == CardId::RITUAL_DAGGER) {
+        specialData = Card::RITUAL_DAGGER_BASE_MISC; // Java: misc = 15 at construction (O13)
+    }
 }
 
 CardInstance::CardInstance(const Card &card) : CardInstance(card.getId(), card.isUpgraded()) {

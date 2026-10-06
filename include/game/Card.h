@@ -16,8 +16,10 @@ namespace sts {
         bool upgraded = false;
 
         Card() = default;
-        Card(CardId id) : id(id) {}
-        Card(CardId id, int upgraded) : id(id), upgraded(upgraded) {}
+        // Java RitualDagger() sets misc = 15 (baseDamage = misc); every created card starts there (O13).
+        static constexpr std::int16_t RITUAL_DAGGER_BASE_MISC = 15;
+        Card(CardId id) : id(id), misc(id == CardId::RITUAL_DAGGER ? RITUAL_DAGGER_BASE_MISC : 0) {}
+        Card(CardId id, int upgraded) : id(id), misc(id == CardId::RITUAL_DAGGER ? RITUAL_DAGGER_BASE_MISC : 0), upgraded(upgraded) {}
 
         [[nodiscard]] CardId getId() const;
         [[nodiscard]] int getUpgraded() const;
