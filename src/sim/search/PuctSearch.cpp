@@ -261,6 +261,22 @@ namespace sts::search {
         return r.value;
     }
 
+    int victoryRelicHeal(const RelicId *relics, int n, int curHp, int maxHp) {
+        for (int i = 0; i < n; ++i)
+            if (relics[i] == RelicId::MARK_OF_THE_BLOOM) return curHp;   // GameContext::playerHeal returns early
+        for (int i = 0; i < n; ++i) {
+            switch (relics[i]) {
+                case RelicId::BURNING_BLOOD: curHp = std::min(curHp + 6, maxHp); break;
+                case RelicId::BLACK_BLOOD: curHp = std::min(curHp + 12, maxHp); break;
+                case RelicId::MEAT_ON_THE_BONE:
+                    if (curHp <= maxHp / 2) curHp = std::min(curHp + 12, maxHp);
+                    break;
+                default: break;
+            }
+        }
+        return curHp;
+    }
+
     double PuctSearch::terminalValue(const BattleContext &bc, TerminalMode mode) {
         if (mode == TerminalMode::Outcome)
             return bc.outcome == Outcome::PLAYER_VICTORY ? 1.0 : -1.0;
@@ -268,7 +284,10 @@ namespace sts::search {
         if (bc.outcome != Outcome::PLAYER_VICTORY) return -1.0;
         const int maxHp = bc.player.maxHp;
         if (maxHp <= 0) return 0.0;
-        return static_cast<double>(bc.player.curHp) / static_cast<double>(maxHp);   // int/int true division
+        int curHp = bc.player.curHp;
+        if (mode == TerminalMode::HpFractionAfterVictoryRelics)
+            curHp = victoryRelicHeal(bc.exitHpRelics.begin(), bc.exitHpRelics.size(), curHp, maxHp);
+        return static_cast<double>(curHp) / static_cast<double>(maxHp);   // int/int true division
     }
 
 

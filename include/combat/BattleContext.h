@@ -109,6 +109,11 @@ namespace sts {
         // The C++ featurizer (sim/search/Featurize) reads this so it needs no GameContext.
         std::array<std::uint64_t, 3> initRelicBits {0, 0, 0};
 
+        // PLAN-era3-micro 0.3: the relics that change HP on a VICTORY exit (or block healing), in gc.relics.relics
+        // ORDER (= updateRelicsOnExit's iteration order): BURNING_BLOOD, BLACK_BLOOD, MEAT_ON_THE_BONE, and
+        // MARK_OF_THE_BLOOM (blocks every heal). Read ONLY by TerminalMode::HpFractionAfterVictoryRelics.
+        fixed_list<RelicId, 4> exitHpRelics;
+
         BattleContext() = default;
         BattleContext(const BattleContext &rhs) = default;
 

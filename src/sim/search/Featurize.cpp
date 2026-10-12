@@ -166,7 +166,9 @@ namespace {
     // combat_featurizer.card_index
     inline int cardIndex(const Vocab &v, const CardInstance &c, int numCardTypes) {
         int base = v.cardIdx[static_cast<int>(c.id)];
-        if (base < 0 || base >= numCardTypes) return -1;
+        if (base < 0) return -1;  // not in the vocabulary
+        if (base >= numCardTypes)  // B110: fail loudly (Python card_index raises likewise)
+            throw std::runtime_error("card vocab index " + std::to_string(base) + " >= num_card_types " + std::to_string(numCardTypes));
         return base + (c.isUpgraded() ? numCardTypes : 0);
     }
 

@@ -86,6 +86,13 @@ void BattleContext::initRelics(const GameContext &gc) {
     player.relicBits0 = gc.relics.relicBits0;
     player.relicBits1 = gc.relics.relicBits1;
     initRelicBits = {gc.relics.relicBits0, gc.relics.relicBits1, gc.relics.relicBits2};
+    exitHpRelics = fixed_list<RelicId, 4>();
+    for (const auto &r : gc.relics.relics) {
+        if (r.id == R::BURNING_BLOOD || r.id == R::BLACK_BLOOD || r.id == R::MEAT_ON_THE_BONE ||
+            r.id == R::MARK_OF_THE_BLOOM) {
+            exitHpRelics.push_back(r.id);
+        }
+    }
 
     fixed_list<RelicId, 4> atBattleStartPreDraw;
     fixed_list<RelicId, 8> atBattleStart;

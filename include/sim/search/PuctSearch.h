@@ -50,7 +50,14 @@ namespace sts::search {
     int puctSelectVL(const std::int32_t *N, const std::int32_t *vl, const float *W, const float *P,
                      const bool *mask, double cPuct, double vLoss);
 
-    enum class TerminalMode { Outcome = 0, HpFraction = 1 };
+    enum class TerminalMode { Outcome = 0, HpFraction = 1, HpFractionAfterVictoryRelics = 2 };
+
+    // PLAN-era3-micro 0.3: the post-victory relic heal, mirroring BattleContext::updateRelicsOnExit's VICTORY
+    // branch + GameContext::playerHeal. Iterates `relics` IN ORDER: BURNING_BLOOD +6, BLACK_BLOOD +12,
+    // MEAT_ON_THE_BONE +12 iff cur <= max / 2 (integer division, evaluated on the cur AFTER earlier heals);
+    // each heal is capped at max; MARK_OF_THE_BLOOM anywhere in the list blocks every heal. Returns the new cur.
+    // Python twin: sts.training.reward_function.victory_relic_heal (parity-tested).
+    int victoryRelicHeal(const RelicId *relics, int n, int curHp, int maxHp);
 
     struct LeafResult {
         std::array<float, PY_ACTION_SPACE> P;

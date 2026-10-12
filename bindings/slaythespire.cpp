@@ -1888,6 +1888,7 @@ PYBIND11_MODULE(slaythespire, m) {
                 sts::search::TerminalMode tm;
                 if (terminal_mode == "outcome") tm = sts::search::TerminalMode::Outcome;
                 else if (terminal_mode == "hp_fraction") tm = sts::search::TerminalMode::HpFraction;
+                else if (terminal_mode == "hp_fraction_after_victory_relics") tm = sts::search::TerminalMode::HpFractionAfterVictoryRelics;
                 else throw std::invalid_argument("run_tree: unknown terminal_mode '" + terminal_mode + "'");
                 std::vector<double> noise;
                 const std::vector<double> *noisePtr = nullptr;
@@ -1935,6 +1936,7 @@ PYBIND11_MODULE(slaythespire, m) {
                 sts::search::TerminalMode tm;
                 if (terminal_mode == "outcome") tm = sts::search::TerminalMode::Outcome;
                 else if (terminal_mode == "hp_fraction") tm = sts::search::TerminalMode::HpFraction;
+                else if (terminal_mode == "hp_fraction_after_victory_relics") tm = sts::search::TerminalMode::HpFractionAfterVictoryRelics;
                 else throw std::invalid_argument("run_trees_lockstep: unknown terminal_mode '" + terminal_mode + "'");
                 if (root_noises.size() != seeds.size())
                     throw std::invalid_argument("run_trees_lockstep: root_noises needs one entry (ndarray or None) per seed");
@@ -2059,8 +2061,17 @@ PYBIND11_MODULE(slaythespire, m) {
         })
         .def("__eq__", [](const sts::search::ConvCtx &a, const sts::search::ConvCtx &b) { return a == b; });
 
+    m.def("victory_relic_heal",
+          [](const std::vector<RelicId> &relics, int curHp, int maxHp) {
+              return sts::search::victoryRelicHeal(relics.data(), static_cast<int>(relics.size()), curHp, maxHp);
+          }, pybind11::arg("relics"), pybind11::arg("cur_hp"), pybind11::arg("max_hp"),
+          "PLAN-era3-micro 0.3 pure post-victory relic heal (C++ twin of reward_function.victory_relic_heal)");
+
     pybind11::class_<BattleContext>(m, "BattleContext")
         .def(pybind11::init<>())
+        .def_property_readonly("exit_hp_relics",
+            [](const BattleContext &bc) { return std::vector<RelicId>(bc.exitHpRelics.begin(), bc.exitHpRelics.end()); },
+            "Victory-exit HP relics (Burning/Black Blood, Meat on the Bone, Mark of the Bloom) in gc.relics order")
 
         // Initialise from a GameContext (starts the fight)
         .def("init",
@@ -2354,7 +2365,7 @@ PYBIND11_MODULE(slaythespire, m) {
                 cfg.mmidCap = mmid_cap; cfg.era = era;
                 return featuresToPy(sts::search::featurize(bc, cfg), cfg);
             },
-            pybind11::arg("num_card_types") = 364, pybind11::arg("hand_slots") = 10,
+            pybind11::arg("num_card_types") = 369, pybind11::arg("hand_slots") = 10,
             pybind11::arg("preview_slots") = 5, pybind11::arg("card_select_slots") = 3,
             pybind11::arg("num_monster_slots") = 5, pybind11::arg("mmid_cap") = 198, pybind11::arg("era") = 1,
             "C++ emulation of the Python leaf featurization: {section: {field: ndarray}} + keys{section: bytes}")

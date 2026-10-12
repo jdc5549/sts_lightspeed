@@ -20,7 +20,7 @@ namespace sts::search {
 
     // The StructuredEncoderConfig values the Python featurizer takes (taken from the live encoder).
     struct FeaturizerConfig {
-        int numCardTypes = 364;    // cfg.num_card_types: embedding half-size (NOT the flat vocab size)
+        int numCardTypes = 369;    // cfg.num_card_types: embedding half-size (NOT the flat vocab size)
         int handSlots = 10;
         int previewSlots = 5;      // cfg.frozen_eye_preview_slots
         int cardSelectSlots = 3;
