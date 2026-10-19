@@ -54,7 +54,7 @@ namespace sts {
         void obtain(GameContext &gc, Card card, int count=1); // for all cards
         void obtainRaw(Card card);
 
-        void remove(GameContext &gc, int idx);
+        void remove(GameContext &gc, int idx, bool silent=false);
         void removeSelected(GameContext &gc, const fixed_list<SelectScreenCard, 3> &selectList);
         void upgrade(int idx);
         void addMatchingToSelectList(fixed_list<SelectScreenCard, MAX_SIZE> &selectList, const CardPredicate &p) const;

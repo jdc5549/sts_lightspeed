@@ -1495,6 +1495,10 @@ bool GameContext::obtainRelic(RelicId r) {
             break;
         }
 
+        case RelicId::NECRONOMICON: // Java Necronomicon.onEquip: ShowCardAndObtainEffect(new Necronomicurse()) (Omamori applies)
+            deck.obtain(*this, CardId::NECRONOMICURSE);
+            break;
+
         case RelicId::CALLING_BELL: {
             deck.obtain(*this, CardId::CURSE_OF_THE_BELL);
             Rewards reward;

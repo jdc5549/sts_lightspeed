@@ -351,6 +351,17 @@ PYBIND11_MODULE(slaythespire, m) {
             },
              "remove a card at a idx in the deck"
         )
+        .def("remove_card_silent",
+            [](GameContext &gc, int idx) {
+                if (idx < 0 || idx >= gc.deck.size()) {
+                    std::cerr << "invalid remove deck remove idx" << std::endl;
+                    return;
+                }
+                gc.deck.remove(gc, idx, /*silent=*/true);
+            },
+            pybind11::arg("idx"),
+            "remove a card without on-remove effects (Parasite max-HP loss, Necronomicurse re-add); use for mid-run state injection"
+        )
         .def_property_readonly("relics",
                [] (const GameContext &gc) { return std::vector(gc.relics.relics); },
                "returns a copy of the list of relics"

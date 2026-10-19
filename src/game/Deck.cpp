@@ -230,7 +230,7 @@ void Deck::removeBottle(CardType bottleType) {
     ++transformableCount;
 }
 
-void Deck::remove(GameContext &gc, int idx) {
+void Deck::remove(GameContext &gc, int idx, bool silent) {
     const auto c = cards[idx];
 
     if (c.getType() == CardType::CURSE){
@@ -238,7 +238,7 @@ void Deck::remove(GameContext &gc, int idx) {
             --cardTypeCounts[static_cast<int>(CardType::CURSE)];
             --transformableCount;
         }
-        if (c.getId() == CardId::PARASITE) {
+        if (!silent && c.getId() == CardId::PARASITE) {
             gc.loseMaxHp(3);
         }
         // O11: curses cannot be bottled, but a bottled card above idx shifts down with the list.
@@ -248,6 +248,11 @@ void Deck::remove(GameContext &gc, int idx) {
             }
         }
         cards.remove(idx);
+        if (!silent && c.getId() == CardId::NECRONOMICURSE) {
+            // Java Necronomicurse.onRemoveFromMasterDeck -> NecronomicurseEffect: raw addToTop of a NEW
+            // Necronomicurse (no Omamori / Ceramic Fish). Not transformable, so no count bookkeeping.
+            cards.push_back(Card(CardId::NECRONOMICURSE));
+        }
         return;
     }
 
