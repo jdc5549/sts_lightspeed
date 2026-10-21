@@ -415,6 +415,18 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("obtain_potion",
             [](GameContext &gc, Potion p) { gc.obtainPotion(p); },
             "add a potion to inventory")
+        .def("discard_potion",
+            [](GameContext &gc, int slot) {
+                if (slot < 0 || slot >= gc.potionCapacity) {
+                    throw pybind11::value_error("discard_potion: slot out of range");
+                }
+                if (gc.potions[slot] == Potion::EMPTY_POTION_SLOT) {
+                    throw pybind11::value_error("discard_potion: slot already empty");
+                }
+                gc.discardPotionAtIdx(slot);
+            },
+            pybind11::arg("slot"),
+            "empty one potion slot (mirrors the game's discard path; ValueError on bad/empty slot)")
         .def("take_reward_gold",
             [](GameContext &gc, int idx) {
                 auto &r = gc.info.rewardsContainer;
