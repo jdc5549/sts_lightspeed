@@ -2,6 +2,7 @@
 // Created by keega on 9/16/2021.
 //
 
+#include <limits>
 #include "sim/search/PyLegality.h"
 #include "sim/search/Featurize.h"
 #include "sim/search/StateKey.h"
@@ -1875,8 +1876,19 @@ PYBIND11_MODULE(slaythespire, m) {
             d["vl_descents"] = c.vlDescents; d["vl_collisions"] = c.vlCollisions;
             d["vl_pending_max"] = c.vlPendingMax; d["peak_tree_nodes"] = c.peakTreeNodes;
             d["vl_inflight_after_step_max"] = c.vlInflightAfterStepMax;
+            d["descends"] = c.descends; d["terminal_descends"] = c.terminalDescends;
             return d;
         })
+        .def("reset_last_search", &sts::search::PuctSearch::resetLastSearch)
+        .def("last_search", [](const sts::search::PuctSearch &ps) {
+            const auto &s = ps.lastSearch();
+            pybind11::dict d;
+            d["max_depth"] = s.maxDepth; d["trees"] = s.trees;
+            d["root_q"] = s.rootQTrees > 0 ? s.rootQSum / s.rootQTrees : std::numeric_limits<double>::quiet_NaN();
+            d["v_net_root"] = s.vNetTrees > 0 ? s.vNetSum / s.vNetTrees : std::numeric_limits<double>::quiet_NaN();
+            return d;
+        }, "Read-only stats of the last search (since reset_last_search / the last lockstep call): max descend depth, "
+           "mean over trees of sum(W)/sum(N) at the root, mean over trees of the root's first-expansion value")
         .def("set_record_lockstep_log", &sts::search::PuctSearch::setRecordLockstepLog,
              "TEST ONLY: record one (tree, nn_key, row, sig) list per lockstep step")
         .def("clear_lockstep_log", &sts::search::PuctSearch::clearLockstepLog)

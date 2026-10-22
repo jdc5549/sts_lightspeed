@@ -310,6 +310,20 @@ namespace sts::search {
         return v;
     }
 
+    void PuctSearch::noteDescendEnd(std::size_t depth, bool terminal) {
+        ++counters_.descends;
+        if (terminal) ++counters_.terminalDescends;
+        if (static_cast<int>(depth) > lastSearch_.maxDepth) lastSearch_.maxDepth = static_cast<int>(depth);
+    }
+
+    void PuctSearch::noteTreeEnd(const Node &root, double vNet) {
+        ++lastSearch_.trees;
+        double sw = 0.0, sn = 0.0;
+        for (int a = 0; a < PY_ACTION_SPACE; ++a) { sw += static_cast<double>(root.W[a]); sn += static_cast<double>(root.N[a]); }
+        if (sn > 0.0) { lastSearch_.rootQSum += sw / sn; ++lastSearch_.rootQTrees; }
+        lastSearch_.vNetSum += vNet; ++lastSearch_.vNetTrees;
+    }
+
     bool PuctSearch::descend(std::deque<Node> &pool, const Bundle &rootState, double cPuct,
                              const LeafEval *leafEval, TerminalMode terminal, SimCursor &cur, double &vOut,
                              int vlStep, double vlValue) {
@@ -320,24 +334,28 @@ namespace sts::search {
         while (true) {
             if (node->bc.outcome != Outcome::UNDECIDED) {          // terminal check
                 const double v = terminalValue(node->bc, terminal);
+                noteDescendEnd(path.size(), true);
                 backup(path, v);
                 vOut = v;
                 return true;
             }
             if (!node->expanded) {                                  // leaf: expand
-                if (!state->compat) { backup(path, 0.0); vOut = 0.0; return true; }
+                if (!state->compat) { noteDescendEnd(path.size(), false); backup(path, 0.0); vOut = 0.0; return true; }
                 if (leafEval == nullptr && vlStep >= 0 && node->pendStep == vlStep) {
+                    noteDescendEnd(path.size(), false);
                     cur.node = node;                                // COLLISION: already pending in this step
                     cur.state = state;
                     cur.collision = true;
                     return false;
                 }
                 if (leafEval == nullptr && nn_.find(state->key) == nn_.end()) {
+                    noteDescendEnd(path.size(), false);
                     cur.node = node;                                // pending: the caller evaluates it
                     cur.state = state;
                     return false;
                 }
                 const double v = expand(*node, *state, leafEval);
+                noteDescendEnd(path.size(), false);
                 if (mutation_ == 3 && path.empty())
                     path.push_back({node, puctSelectImpl(node->N.data(), node->W.data(), node->P.data(),
                                                          node->mask.data(), cPuct, 0)});
@@ -348,7 +366,7 @@ namespace sts::search {
             const PyMask76 &mask = node->mask;                      // selection: nn_cache path
             bool any = false;
             for (bool m : mask) any = any || m;
-            if (!any) { backup(path, 0.0); vOut = 0.0; return true; }
+            if (!any) { noteDescendEnd(path.size(), false); backup(path, 0.0); vOut = 0.0; return true; }
 
             // vlSum == 0 (always so on the runTree path and whenever nothing is in flight here): today's exact
             // code on real N/W. Otherwise the virtual-loss-aware selection on N' / W'.
@@ -414,17 +432,19 @@ namespace sts::search {
         pool[0].bc = cloneWithFreshRng(realBc, seed, reshuffle);
         ++counters_.nodes;
 
-        double totalValue = 0.0;
+        double totalValue = 0.0, vNetRoot = 0.0;
         for (int simIdx = 0; simIdx < nSims; ++simIdx) {
             ++counters_.sims;
             const double v = simulate(pool, rootState, cPuct, leafEval, terminal);
             totalValue += v;
+            if (simIdx == 0) vNetRoot = v;          // sim 0 expands the root: its value IS the net's root estimate
             if (rootNoise != nullptr && simIdx == 0 && pool[0].expanded)
                 applyRootNoise(pool[0], rootState, *rootNoise, noiseEps);
         }
         TreeResult res;
         res.rawN = pool[0].N;
         lastRootW_ = pool[0].W;
+        if (nSims > 0) noteTreeEnd(pool[0], vNetRoot);
         res.rootValue = nSims > 0 ? totalValue / static_cast<double>(nSims) : 0.0;
         return res;
     }
@@ -444,7 +464,9 @@ namespace sts::search {
         struct Tree {
             std::deque<Node> pool;
             double totalValue = 0.0;
+            double vNetRoot = 0.0;
         };
+        resetLastSearch();
         std::vector<std::unique_ptr<Tree>> trees;
         trees.reserve(K);
         for (std::size_t k = 0; k < K; ++k) {
@@ -475,6 +497,7 @@ namespace sts::search {
                     double v = 0.0;
                     if (descend(trees[k]->pool, rootState, cPuct, nullptr, terminal, cur, v, step, vlValue)) {
                         trees[k]->totalValue += v;                     // finished w/o a net call: real backup, uncharged
+                        if (done + d == 0) trees[k]->vNetRoot = v;
                         afterSim(k, done + d);
                     } else {
                         if (cur.collision) ++counters_.vlCollisions;
@@ -565,6 +588,7 @@ namespace sts::search {
                                                                     node.mask.data(), cPuct, 0)});
                     backup(p.cur.path, v);
                     t.totalValue += v;
+                    if (done == 0) t.vNetRoot = v;                           // step 0 = one descent per tree = the root expansion
                     afterSim(p.tree, done);                                  // root noise only matters at sim 0
                 }
             }
@@ -578,6 +602,7 @@ namespace sts::search {
         for (std::size_t k = 0; k < K; ++k) {
             out[k].rawN = trees[k]->pool[0].N;
             lastRootWs_[k] = trees[k]->pool[0].W;
+            if (nSims > 0) noteTreeEnd(trees[k]->pool[0], trees[k]->vNetRoot);
             out[k].rootValue = nSims > 0 ? trees[k]->totalValue / static_cast<double>(nSims) : 0.0;
             if (static_cast<long long>(trees[k]->pool.size()) > counters_.peakTreeNodes)
                 counters_.peakTreeNodes = static_cast<long long>(trees[k]->pool.size());

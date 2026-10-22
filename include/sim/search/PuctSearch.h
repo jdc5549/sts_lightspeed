@@ -92,6 +92,20 @@ namespace sts::search {
         // share ONE map but are counted under their own section) and leaf forwards run in C++.
         std::array<long long, kNumFeatSections> memoHits{}, memoMisses{};
         long long cppLeafForwards = 0, memoClears = 0;
+        // PLAN-c4cf 4.5 (read-only instrumentation): every descend() that ENDS (finished, or returned pending/collision --
+        // each descend ends exactly once, so descends == sims) and those that ended at a TERMINAL node (bc.outcome != UNDECIDED).
+        long long descends = 0, terminalDescends = 0;
+    };
+
+    // PLAN-c4cf 4.5: statistics of the LAST search (reset by resetLastSearch(), and at the start of runTreesLockstep). Read-only:
+    // consumes no RNG, evaluates nothing. maxDepth = max over every descend of the edges root->stop node. rootQSum/rootQTrees:
+    // per tree, sum(W)/sum(N) over the root's edges (visit-weighted mean backed-up value; sim 0, the root expansion, backs up
+    // nothing so it is excluded). vNetSum/vNetTrees: per tree, the value the root's own first expansion received from the
+    // leaf evaluator (sim 0's value). All values are the search's value scale (net value / terminal value), player-perspective.
+    struct LastSearchStats {
+        int maxDepth = 0;
+        double rootQSum = 0.0, vNetSum = 0.0;
+        int rootQTrees = 0, vNetTrees = 0, trees = 0;
     };
 
     // TEST/diagnostic record of one pending leaf of a lockstep step (see setRecordLockstepLog).
@@ -197,6 +211,8 @@ namespace sts::search {
         const std::array<float, PY_ACTION_SPACE> &lastRootW() const { return lastRootW_; }
         const SearchCounters &counters() const { return counters_; }
         void resetCounters() { counters_ = SearchCounters(); }
+        const LastSearchStats &lastSearch() const { return lastSearch_; }
+        void resetLastSearch() { lastSearch_ = LastSearchStats(); }
         std::size_t nnCacheSize() const { return nn_.size(); }
         std::size_t extractCacheSize() const { return extract_.size(); }
 
@@ -283,6 +299,9 @@ namespace sts::search {
         std::unordered_map<std::string, NNEntry> nn_;
         std::unordered_map<std::uint64_t, Bundle> extract_;
         SearchCounters counters_;
+        LastSearchStats lastSearch_;
+        void noteDescendEnd(std::size_t depth, bool terminal);
+        void noteTreeEnd(const Node &root, double vNet);
         std::array<float, PY_ACTION_SPACE> lastRootW_{};
         std::vector<std::array<float, PY_ACTION_SPACE>> lastRootWs_;
         std::vector<std::vector<LockstepLogEntry>> lockstepLog_;
