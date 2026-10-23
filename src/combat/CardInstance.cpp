@@ -324,7 +324,10 @@ bool CardInstance::canUse(const BattleContext &bc, int target, const bool inAuto
             break;
 
         case CardType::CURSE:
-            if (!bc.player.hasRelic<RelicId::BLUE_CANDLE>()) {
+            // O10 (fixed): Java AbstractCard.canUse (l.901-908): a curse is blocked iff costForTurn < -1 and no
+            // Blue Candle -- Pride (cost 1) is playable. (The STATUS rule below is the same shape; with the card
+            // table's costs [Slimed 1, every other status -2] it is equivalent to the Java.)
+            if (costForTurn < -1 && !bc.player.hasRelic<RelicId::BLUE_CANDLE>()) {
                 return false;
             }
             break;

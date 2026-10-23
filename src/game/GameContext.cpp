@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <stdexcept>
 #include <iostream>
 
 #include "constants/RelicPools.h"
@@ -1550,6 +1551,25 @@ bool GameContext::obtainRelic(RelicId r) {
             break;
         }
 
+        // O17/O18: arm the counter-gated relics on obtain. relicData == 0 reads as
+        // "spent" to every trigger (Lizard Tail death check, openTreasureRoomChest).
+        // Java: LizardTail (counter -1 = armed; C++ arms with any nonzero),
+        // Matryoshka.java (counter = 2), NlothsMask.java (counter = 1).
+        case RelicId::LIZARD_TAIL: {
+            relicData = 1;
+            break;
+        }
+
+        case RelicId::MATRYOSHKA: {
+            relicData = 2;
+            break;
+        }
+
+        case RelicId::NLOTHS_HUNGRY_FACE: {
+            relicData = 1;
+            break;
+        }
+
         case RelicId::PANDORAS_BOX: {
             int transformCount = 0;
             for (int i = deck.size()-1; i >= 0; --i) {
@@ -2941,16 +2961,28 @@ void GameContext::chooseEventOption(int idx) {
             switch (idx) {
                 case 0:
                     // Warn!! replace might go around future obtainRelic logic
+                    if (info.skillCardDeckIdx < 0) {
+                        // O19: Java disables this button when the deck has no card of the type.
+                        throw std::runtime_error("Falling: option Removed Skill chosen with no skill card in the deck (deck idx -1)");
+                    }
                     deck.remove(*this, info.skillCardDeckIdx);
                     regainControl();
                     break;
 
                 case 1:
+                    if (info.powerCardDeckIdx < 0) {
+                        // O19: Java disables this button when the deck has no card of the type.
+                        throw std::runtime_error("Falling: option Removed Power chosen with no power card in the deck (deck idx -1)");
+                    }
                     deck.remove(*this, info.powerCardDeckIdx);
                     regainControl();
                     break;
 
                 case 2:
+                    if (info.attackCardDeckIdx < 0) {
+                        // O19: Java disables this button when the deck has no card of the type.
+                        throw std::runtime_error("Falling: option Removed Attack chosen with no attack card in the deck (deck idx -1)");
+                    }
                     deck.remove(*this, info.attackCardDeckIdx);
                     regainControl();
                     break;

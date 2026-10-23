@@ -203,9 +203,11 @@ PyMask76 search::legalMask76(const BattleContext &bc) {
         const int cft = c.costForTurn;
         const PyType ty = pyType(c.id);
         // _can_play
-        if (cft < -1) continue;
-        if (ty == T_STATUS) { if (c.id != t.slimed && !medicalKit) continue; }
-        else if (ty == T_CURSE) { if (!blueCandle) continue; }
+        // Java AbstractCard.canUse l.901-908 (O10 / Blue Candle fixed): the Medical Kit / Blue Candle exceptions
+        // apply to a cost < -1 STATUS / CURSE BEFORE the generic cost rule (twin of combat_action_enumerator._can_play).
+        if (ty == T_STATUS) { if (cft < -1 && !medicalKit) continue; }
+        else if (ty == T_CURSE) { if (cft < -1 && !blueCandle) continue; }
+        else if (cft < -1) continue;
         if (cft > energy) continue;
         if (entangled && ty == T_ATTACK) continue;
 

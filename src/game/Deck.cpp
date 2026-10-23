@@ -2,6 +2,8 @@
 // Created by gamerpuppy on 7/10/2021.
 //
 
+#include <stdexcept>
+#include <string>
 #include <cassert>
 #include <algorithm>
 
@@ -231,6 +233,11 @@ void Deck::removeBottle(CardType bottleType) {
 }
 
 void Deck::remove(GameContext &gc, int idx, bool silent) {
+    // O19: an out-of-range idx (e.g. -1 from an option with no card of the type) read cards[idx] and shifted
+    // arr[-1], an out-of-bounds write that set phantom relic bits. Fail loudly before any read.
+    if (idx < 0 || idx >= cards.size()) {
+        throw std::out_of_range("Deck::remove: idx " + std::to_string(idx) + " outside deck of size " + std::to_string(cards.size()));
+    }
     const auto c = cards[idx];
 
     if (c.getType() == CardType::CURSE){
@@ -304,8 +311,12 @@ void Deck::removeSelected(GameContext &gc, const fixed_list<SelectScreenCard, 3>
     }
     std::sort(removeIdx, removeIdx+selectList.size());
 
+    // O20: remove by the SORTED indices, highest first, so each removal leaves the remaining indices valid.
+    // Removing by selectList[i].deckIdx (selection order) went stale when the higher index was picked first and
+    // removed the card after the intended one (Java removes the selected cards by reference: EmptyCage.update,
+    // NeowReward.update -> masterDeck.removeCard).
     for (int i = selectList.size() - 1; i >= 0; --i) {
-        remove(gc, selectList[i].deckIdx);
+        remove(gc, removeIdx[i]);
     }
 }
 

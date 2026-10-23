@@ -534,6 +534,14 @@ void BattleContext::exitBattle(GameContext &g) const {
 }
 
 void BattleContext::updateRelicsOnExit(GameContext &g) const {
+    // O14 (fixed): Java AbstractRoom.endBattle() fires Meat on the Bone's onTrigger() BEFORE player.onVictory()
+    // (which runs Burning Blood / Black Blood / Face of Cleric in relic order), so Meat's <= 50% check reads
+    // the HP from BEFORE the blood heals. relics/MeatOnTheBone.java: curHp <= maxHp/2.0f && curHp > 0 -> heal(12).
+    if (outcome == Outcome::PLAYER_VICTORY && g.relics.has(RelicId::MEAT_ON_THE_BONE) &&
+        2 * g.curHp <= g.maxHp && g.curHp > 0) {
+        g.playerHeal(12);
+    }
+
     for (auto &r : g.relics.relics) {
         switch (r.id) {
             case RelicId::HAPPY_FLOWER:
@@ -594,8 +602,12 @@ void BattleContext::updateRelicsOnExit(GameContext &g) const {
                 break;
 
             case RelicId::MEAT_ON_THE_BONE:
-                if (outcome == Outcome::PLAYER_VICTORY && g.curHp <= g.maxHp / 2) {
-                    g.playerHeal(12);
+                break;   // handled before this loop (O14)
+
+            case RelicId::FACE_OF_CLERIC:
+                // O15 (fixed): relics/FaceOfCleric.java onVictory -> increaseMaxHp(1) = maxHp += 1; heal(1)
+                if (outcome == Outcome::PLAYER_VICTORY) {
+                    g.playerIncreaseMaxHp(1);
                 }
                 break;
 

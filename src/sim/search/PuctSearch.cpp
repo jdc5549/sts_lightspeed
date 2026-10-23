@@ -264,13 +264,18 @@ namespace sts::search {
     int victoryRelicHeal(const RelicId *relics, int n, int curHp, int maxHp) {
         for (int i = 0; i < n; ++i)
             if (relics[i] == RelicId::MARK_OF_THE_BLOOM) return curHp;   // GameContext::playerHeal returns early
+        // Mirrors the Java (O14 fixed): Meat on the Bone triggers BEFORE the blood relics' onVictory
+        // (AbstractRoom.endBattle). Max-HP relics (Face of Cleric, O15) are NOT modelled here -- the terminal
+        // value is unchanged by them (recipe change, out of scope).
+        for (int i = 0; i < n; ++i)
+            if (relics[i] == RelicId::MEAT_ON_THE_BONE) {
+                if (2 * curHp <= maxHp && curHp > 0) curHp = std::min(curHp + 12, maxHp);
+                break;
+            }
         for (int i = 0; i < n; ++i) {
             switch (relics[i]) {
                 case RelicId::BURNING_BLOOD: curHp = std::min(curHp + 6, maxHp); break;
                 case RelicId::BLACK_BLOOD: curHp = std::min(curHp + 12, maxHp); break;
-                case RelicId::MEAT_ON_THE_BONE:
-                    if (curHp <= maxHp / 2) curHp = std::min(curHp + 12, maxHp);
-                    break;
                 default: break;
             }
         }

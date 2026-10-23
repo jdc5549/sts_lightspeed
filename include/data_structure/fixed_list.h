@@ -6,6 +6,7 @@
 #define STS_LIGHTSPEED_FIXEDLIST_H
 
 #include <array>
+#include <cassert>
 
 namespace sts {
 
@@ -100,6 +101,7 @@ namespace sts {
         }
 
         void remove(int idx) {
+            assert(idx >= 0 && idx < list_size);
             while (idx+1 < list_size) {
                 arr[idx] = arr[idx+1];
                 ++idx;

@@ -53,9 +53,9 @@ namespace sts::search {
     enum class TerminalMode { Outcome = 0, HpFraction = 1, HpFractionAfterVictoryRelics = 2 };
 
     // PLAN-era3-micro 0.3: the post-victory relic heal, mirroring BattleContext::updateRelicsOnExit's VICTORY
-    // branch + GameContext::playerHeal. Iterates `relics` IN ORDER: BURNING_BLOOD +6, BLACK_BLOOD +12,
-    // MEAT_ON_THE_BONE +12 iff cur <= max / 2 (integer division, evaluated on the cur AFTER earlier heals);
-    // each heal is capped at max; MARK_OF_THE_BLOOM anywhere in the list blocks every heal. Returns the new cur.
+    // branch + GameContext::playerHeal. Mirrors the Java (O14 fixed): MEAT_ON_THE_BONE first, +12 iff cur <= max / 2
+    // (evaluated on the cur BEFORE the blood heals); then BURNING_BLOOD +6, BLACK_BLOOD +12 in order. Max-HP relics
+    // (Face of Cleric, O15) are not modelled here. Each heal is capped at max; MARK_OF_THE_BLOOM anywhere in the list blocks every heal. Returns the new cur.
     // Python twin: sts.training.reward_function.victory_relic_heal (parity-tested).
     int victoryRelicHeal(const RelicId *relics, int n, int curHp, int maxHp);
 
