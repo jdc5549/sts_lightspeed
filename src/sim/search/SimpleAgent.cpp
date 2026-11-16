@@ -317,8 +317,11 @@ bool search::SimpleAgent::playPotion(BattleContext &bc) {
 
 void search::SimpleAgent::playoutBattle(BattleContext &bc) {
     bool usedPotions = !isBossEncounter(bc.encounter);
-    int maxIter = 100000;
+    int maxIter = maxBattleIter;
+    hitActionCap = false;
+    battleIterations = 0;
     while (bc.outcome == Outcome::UNDECIDED && --maxIter > 0) {
+        ++battleIterations;
         if (bc.inputState == InputState::CARD_SELECT) {
             stepBattleCardSelect(bc);
 
@@ -337,6 +340,7 @@ void search::SimpleAgent::playoutBattle(BattleContext &bc) {
             bc.executeActions();
         }
     }
+    hitActionCap = (bc.outcome == Outcome::UNDECIDED);
 }
 
 void search::SimpleAgent::stepBattleCardPlay(BattleContext &bc) {

@@ -30,6 +30,12 @@ namespace sts::search {
         void takeAction(BattleContext &bc, Action a);
         void playoutBattle(BattleContext &bc);
 
+        // B27: playoutBattle's loop cap, and a record of how the last playoutBattle ended.
+        // maxBattleIter defaults to the historical 100000 (a non-default value is test-only).
+        int maxBattleIter = 100000;
+        bool hitActionCap = false;   // true iff the last playoutBattle stopped on the cap with outcome UNDECIDED
+        int battleIterations = 0;    // loop iterations consumed by the last playoutBattle
+
         void stepBattleCardPlay(BattleContext &bc);
         void stepBattleCardSelect(BattleContext &bc);
 

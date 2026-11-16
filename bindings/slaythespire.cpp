@@ -215,7 +215,9 @@ PYBIND11_MODULE(slaythespire, m) {
     // play_battle_simple / play_battle_random: run ONLY the current BATTLE screen
     //   using an alternative micro agent, then return. The GameContext is left in
     //   the post-battle state (REWARDS or next screen). Used by LightspeedRunner
-    //   when micro_agent_type is 'simple' or 'random'.
+    //   when micro_agent_type is 'simple' or 'random'. CAVEAT (B27): play_battle_simple
+    //   forces PLAYER_LOSS when its 100,000-iteration cap is hit with the battle UNDECIDED,
+    //   whatever the HP -- use play_battle_simple_ex to tell that apart from a real loss.
     //
     // play_simple_full: run an entire game (combat + overworld) using SimpleAgent's
     //   heuristics. Used as a baseline in agent comparison experiments.
@@ -235,6 +237,35 @@ PYBIND11_MODULE(slaythespire, m) {
             bc.exitBattle(gc);
         },
         "Run the current BATTLE using SimpleAgent's deterministic heuristic battle logic."
+    );
+
+    // B27: additive twin of play_battle_simple. Identical play (the cap still forces PLAYER_LOSS so
+    // exitBattle resolves), but returns (hit_action_cap, iterations, hit_turn_cap) so a cap hit -- a deck that
+    // survives indefinitely but cannot finish the encounter, i.e. NOT a real defeat, gc.cur_hp can be
+    // in the thousands -- is distinguishable from a genuine loss. max_iter is test-only (default
+    // 100000 == play_battle_simple's cap). play_battle_simple itself is unchanged (returns None).
+    m.def("play_battle_simple_ex",
+        [](GameContext &gc, int max_iter) {
+            search::SimpleAgent agent;
+            agent.curGameContext = &gc;
+            agent.maxBattleIter = max_iter;
+            BattleContext bc;
+            bc.init(gc);
+            agent.playoutBattle(bc);
+            const bool hit = agent.hitActionCap;
+            // The sim core has its OWN length cap: BattleContext::executeActions forces PLAYER_LOSS at
+            // turn > 500 regardless of HP. Report it so an alive "loss" is attributable.
+            const bool hit_turn_cap = bc.outcome == Outcome::PLAYER_LOSS && bc.player.curHp > 0 && bc.turn > 500;
+            if (bc.outcome == Outcome::UNDECIDED) {
+                bc.outcome = Outcome::PLAYER_LOSS;
+            }
+            bc.exitBattle(gc);
+            return pybind11::make_tuple(hit, agent.battleIterations, hit_turn_cap);
+        },
+        pybind11::arg("gc"), pybind11::arg("max_iter") = 100000,
+        "Like play_battle_simple, but returns (hit_action_cap, iterations, hit_turn_cap). hit_action_cap=True means the loop cap "
+        "ended the battle undecided and PLAYER_LOSS was forced (not a real defeat); hit_turn_cap=True means the sim core's turn>500 "
+        "cap forced a PLAYER_LOSS with the player still alive."
     );
 
     m.def("play_battle_random",
